@@ -7,11 +7,13 @@ import { Preview } from "./Preview";
 import { Timeline } from "./Timeline";
 import { AudioPanel, FramePanel, LookPanel, MotionPanel } from "./Panels";
 import { CaptionsPanel } from "./CaptionsPanel";
+import { DirectPanel } from "./DirectPanel";
 import { ExportPanel } from "./ExportPanel";
 import { toast } from "./Toast";
 import { formatTime } from "../lib/format";
 
 const TABS = [
+  { id: "direct", label: "Direct", icon: "sparkle" },
   { id: "frame", label: "Frame", icon: "frame" },
   { id: "look", label: "Look", icon: "palette" },
   { id: "motion", label: "Motion", icon: "speed" },
@@ -30,7 +32,7 @@ export function Editor({ projectId }: { projectId: string }) {
   const [captions, setCaptions] = useState<Captions | null>(null);
   const [transcribeJob, setTranscribeJob] = useState<Job | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
-  const [tab, setTab] = useState<Tab>("frame");
+  const [tab, setTab] = useState<Tab>("direct");
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
   const [ingest, setIngest] = useState<Job | null>(null);
   const [current, setCurrent] = useState(0);
@@ -119,10 +121,10 @@ export function Editor({ projectId }: { projectId: string }) {
     });
   }, [project?.transcription.status, project?.transcription.jobId, load]);
 
-  const transcribe = async (language: string, keyterms: string[]) => {
+  const transcribe = async (language: string, model: "base" | "small") => {
     try {
       await flush();
-      await api.transcribe(projectId, { language, keyterms });
+      await api.transcribe(projectId, { language, model });
       setTranscribeJob(null);
       await load();
     } catch (e) {
@@ -320,6 +322,11 @@ export function Editor({ projectId }: { projectId: string }) {
             ))}
           </nav>
           <div className="tabpanel" key={tab}>
+            {tab === "direct" && (ready
+              ? <DirectPanel project={project} beforeApply={flush}
+                  onApplied={(p) => { setProject(p); setEdit(p.edit); setCaptions(p.captions); }}
+                  onExport={() => setTab("export")} />
+              : <div className="panel"><p className="notice">You can describe your edit once the footage is prepared.</p></div>)}
             {tab === "frame" && <FramePanel edit={edit} set={set} project={project} />}
             {tab === "look" && <LookPanel edit={edit} set={set} health={health} trueFrameOn={trueFrameOn} onTrueFrame={() => setTrueFrameOn((x) => !x)} />}
             {tab === "motion" && <MotionPanel edit={edit} set={set} />}

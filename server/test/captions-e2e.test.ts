@@ -7,11 +7,26 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { buildAss } from "../src/lib/captions.js";
 import { makeFixtures } from "./fixtures.js";
-import { startMockDeepgram } from "./mock-deepgram.js";
+import type { TranscribeRequest, Transcriber } from "../src/lib/whisper/index.js";
 
-const KEY = "dg_test_secret_key_12345";
 let fx: ReturnType<typeof makeFixtures>;
-let dg: Awaited<ReturnType<typeof startMockDeepgram>>;
+
+/** Stand-in for Whisper so caption/export tests are fast; real Whisper is tested in whisper.test.ts. */
+const fake = {
+  mode: "ok" as "ok" | "fail" | "empty" | "slow",
+  last: null as TranscribeRequest | null,
+  words: [["Hi,", 0.2, 0.45], ["I'm", 0.5, 0.7], ["Sokchea.", 0.75, 1.2], ["Welcome", 1.6, 1.95], ["to", 2.0, 2.1], ["my", 2.15, 2.3], ["studio.", 2.35, 2.9]]
+    .map(([text, start, end]) => ({ text: String(text), start: Number(start), end: Number(end), confidence: 1 })),
+};
+const fakeTranscriber: Transcriber = {
+  async transcribe(req) {
+    fake.last = req;
+    req.onProgress?.(0.5);
+    if (fake.mode === "slow") await new Promise((r, j) => { const t = setTimeout(r, 5000); req.signal?.addEventListener("abort", () => { clearTimeout(t); j(new Error("Cancelled")); }); });
+    if (fake.mode === "fail") throw new Error("Speech recognition failed: model error");
+    return { provider: "whisper", model: `whisper-${req.model}`, language: req.language, audioDurationSec: req.audio.length / 16000, createdAt: new Date().toISOString(), words: fake.mode === "empty" ? [] : fake.words };
+  },
+};
 let ctx: Awaited<ReturnType<typeof createApp>>;
 let dataDir: string;
 
@@ -32,42 +47,35 @@ async function transcribe(id: string, body: object = {}) {
 
 beforeAll(async () => {
   fx = makeFixtures();
-  dg = await startMockDeepgram();
   // Awkward characters in the data path exercise filtergraph escaping for real.
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ave it's:a,[test] "));
-  ctx = await createApp({ dataDir, x264Preset: "ultrafast", concurrency: 2, deepgramApiKey: KEY, deepgramBaseUrl: dg.url });
+  ctx = await createApp({ dataDir, x264Preset: "ultrafast", concurrency: 2 }, { transcriber: fakeTranscriber });
 }, 60_000);
 
 afterAll(async () => {
   fx?.cleanup();
-  await dg?.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-describe("Deepgram transcription → captions → burned-in export", () => {
-  it("advertises transcription without leaking the key", async () => {
+describe("Whisper transcription → captions → burned-in export", () => {
+  it("advertises free local transcription", async () => {
     const res = await request(ctx.app).get("/api/health");
-    expect(res.body.ai.transcription).toMatchObject({ available: true, provider: "deepgram", model: "nova-3" });
-    expect(JSON.stringify(res.body)).not.toContain(KEY);
+    expect(res.body.ai.transcription).toMatchObject({ available: true, provider: "whisper", local: true, costUsd: 0 });
   });
 
   it("transcribes, builds synchronised captions, edits them, and burns them into a 9:16 export", async () => {
     const id = await ready(fx.landscape);
-    const { job, project } = await transcribe(id, { language: "en", keyterms: ["Sokchea"] });
+    const { job, project } = await transcribe(id, { language: "en", model: "base" });
     expect(job.status, job.error).toBe("done");
 
-    // Exact request sent to Deepgram
-    expect(dg.state.last!.auth).toBe(`Token ${KEY}`);
-    expect(dg.state.last!.contentType).toBe("audio/ogg");
-    expect(dg.state.last!.bodyHead.toString()).toBe("OggS");
-    expect(dg.state.last!.query.get("model")).toBe("nova-3");
-    expect(dg.state.last!.query.get("language")).toBe("en");
-    expect(dg.state.last!.query.get("smart_format")).toBe("true");
-    expect(dg.state.last!.query.getAll("keyterm")).toEqual(["Sokchea"]);
+    // Whisper receives 16 kHz mono PCM covering the whole clip
+    expect(fake.last!.model).toBe("base");
+    expect(fake.last!.language).toBe("en");
+    expect(fake.last!.audio.length / 16000).toBeCloseTo(4, 0);
+    expect(Math.max(...fake.last!.audio.subarray(0, 16000).map(Math.abs))).toBeGreaterThan(0.05);
 
     expect(project.transcript.words).toHaveLength(7);
-    expect(project.transcript.language).toBe("en");
-    expect(JSON.stringify(project)).not.toContain(KEY);
+    expect(project.transcript.provider).toBe("whisper");
     const segs = project.captions.segments;
     expect(segs.map((s: any) => s.words.map((w: any) => w.text).join(" "))).toEqual(["Hi, I'm Sokchea.", "Welcome to my studio."]);
     expect(segs[0].start).toBe(0.2);
@@ -113,39 +121,35 @@ describe("Deepgram transcription → captions → burned-in export", () => {
     for (const s of res.body.captions.segments) expect(s.words.length).toBeLessThanOrEqual(3);
   });
 
-  it.each([
-    ["401", /rejected the API key/],
-    ["402", /run out of credit/],
-    ["400", /could not process this audio: Bad Request/],
-  ] as const)("reports Deepgram %s errors clearly and never as success", async (mode, msg) => {
-    dg.state.mode = mode;
+  it("reports recognition failures clearly and never as success", async () => {
+    fake.mode = "fail";
     const id = await ready(fx.portraitMov);
     const { job, project } = await transcribe(id);
     expect(job.status).toBe("failed");
-    expect(job.error).toMatch(msg);
-    expect(job.error).not.toContain(KEY);
+    expect(job.error).toMatch(/Speech recognition failed/);
     expect(project.transcription.status).toBe("failed");
     expect(project.captions).toBeNull();
-    dg.state.mode = "ok";
+    fake.mode = "ok";
   }, 60_000);
 
-  it("retries transient Deepgram failures", async () => {
-    dg.state.mode = "flaky";
-    dg.state.calls = 0;
+  it("can cancel a transcription", async () => {
+    fake.mode = "slow";
     const id = (await request(ctx.app).get("/api/projects")).body.find((x: any) => x.source.info.hasAudio).id;
-    const { job } = await transcribe(id);
-    expect(job.status).toBe("done");
-    expect(dg.state.calls).toBe(2);
-    dg.state.mode = "ok";
+    const res = await request(ctx.app).post(`/api/projects/${id}/transcribe`).send({});
+    await new Promise((r) => setTimeout(r, 300));
+    await request(ctx.app).post(`/api/jobs/${res.body.job.id}/cancel`).expect(200);
+    const job = await ctx.jobs.wait(res.body.job.id);
+    expect(job.status).toBe("cancelled");
+    fake.mode = "ok";
   }, 60_000);
 
   it("handles clips with no speech honestly", async () => {
-    dg.state.mode = "empty";
-    const id = (await request(ctx.app).get("/api/projects")).body.find((x: any) => x.source.info.hasAudio).id;
+    fake.mode = "empty";
+    const id = (await request(ctx.app).get("/api/projects")).body.find((x: any) => x.source.info.hasAudio && x.transcription.status !== "running").id;
     const { job, project } = await transcribe(id);
     expect(job.status).toBe("done");
     expect(project.captions.segments).toEqual([]);
-    dg.state.mode = "ok";
+    fake.mode = "ok";
   }, 60_000);
 
   it("refuses to transcribe silent videos", async () => {
@@ -171,22 +175,6 @@ describe("Deepgram transcription → captions → burned-in export", () => {
   }, 60_000);
 });
 
-describe("transcription without a key", () => {
-  it("explains that Deepgram is not configured", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ave-nokey-"));
-    const app2 = await createApp({ dataDir: dir, x264Preset: "ultrafast", deepgramApiKey: null });
-    const health = await request(app2.app).get("/api/health");
-    expect(health.body.ai.transcription.available).toBe(false);
-    const up = await request(app2.app).post("/api/projects").attach("video", fx.landscape);
-    await app2.jobs.wait(up.body.media.jobId);
-    await new Promise((r) => setTimeout(r, 50));
-    const res = await request(app2.app).post(`/api/projects/${up.body.id}/transcribe`).send({});
-    expect(res.status).toBe(503);
-    expect(res.body.error).toMatch(/DEEPGRAM_API_KEY/);
-    fs.rmSync(dir, { recursive: true, force: true });
-  }, 60_000);
-});
-
 describe("optional app password", () => {
   it("requires HTTP Basic auth when APP_PASSWORD is set", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ave-auth-"));
@@ -199,3 +187,30 @@ describe("optional app password", () => {
 });
 
 
+
+describe("plain-English instructions endpoint", () => {
+  it("previews, then applies edits and starts free transcription with the requested caption style", async () => {
+    fake.mode = "ok";
+    const id = await ready(fx.landscape);
+    const text = "Vertical for TikTok, black and white, cut the first 0.5 seconds, add elegant captions at the top";
+    const preview = await request(ctx.app).post(`/api/projects/${id}/instructions`).send({ text });
+    expect(preview.status).toBe(200);
+    expect(preview.body.willTranscribe).toBe(true);
+    expect(preview.body.plan.notUnderstood).toEqual([]);
+    // preview does not change the project
+    expect((await request(ctx.app).get(`/api/projects/${id}`)).body.edit.look).toBe("natural");
+
+    const applied = await request(ctx.app).post(`/api/projects/${id}/instructions`).send({ text, apply: true });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+    expect(applied.body.project.edit).toMatchObject({ aspect: "9:16", look: "noir", trimStart: 0.5 });
+    expect(applied.body.job).toBeTruthy();
+    await ctx.jobs.wait(applied.body.job.id);
+    await new Promise((r) => setTimeout(r, 50));
+    const p = (await request(ctx.app).get(`/api/projects/${id}`)).body;
+    expect(p.captions.style).toMatchObject({ preset: "editorial", position: "upper", enabled: true });
+    expect(p.captions.segments.length).toBeGreaterThan(0);
+
+    const nothing = await request(ctx.app).post(`/api/projects/${id}/instructions`).send({ text: "make it sparkle like unicorns", apply: true });
+    expect(nothing.status).toBe(422);
+  }, 60_000);
+});

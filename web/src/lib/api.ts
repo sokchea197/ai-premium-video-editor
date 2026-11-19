@@ -1,5 +1,11 @@
 import type { Health, Job, Project, EditSettings, ExportRecord, CaptionStyle, CaptionSegment, Chunking } from "./types";
 
+export interface InstructionPlan {
+  changes: string[];
+  notUnderstood: string[];
+  transcribe: boolean;
+}
+
 export interface ProjectPatch {
   name?: string;
   edit?: Partial<EditSettings>;
@@ -37,10 +43,15 @@ export const api = {
   updateProject: (id: string, patch: ProjectPatch) =>
     req<Project>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteProject: (id: string) => req<void>(`/api/projects/${id}`, { method: "DELETE" }),
-  transcribe: (id: string, opts: { language: string; keyterms: string[] }) =>
+  transcribe: (id: string, opts: { language: string; model: "base" | "small" }) =>
     req<{ job: Job }>(`/api/projects/${id}/transcribe`, { method: "POST", body: JSON.stringify(opts) }),
   regroupCaptions: (id: string, chunking: Chunking) =>
     req<Project>(`/api/projects/${id}/captions/regroup`, { method: "POST", body: JSON.stringify({ chunking }) }),
+  instructions: (id: string, text: string, apply: boolean) =>
+    req<{ plan: InstructionPlan; willTranscribe?: boolean; project?: Project; job?: Job | null }>(`/api/projects/${id}/instructions`, {
+      method: "POST",
+      body: JSON.stringify({ text, apply }),
+    }),
   reprocess: (id: string) => req<{ job: Job }>(`/api/projects/${id}/reprocess`, { method: "POST" }),
   startExport: (id: string) => req<{ job: Job; export: ExportRecord }>(`/api/projects/${id}/exports`, { method: "POST" }),
   deleteExport: (id: string, exportId: string) => req<void>(`/api/projects/${id}/exports/${exportId}`, { method: "DELETE" }),

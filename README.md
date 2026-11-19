@@ -1,47 +1,60 @@
 # AI Premium Video Editor
 
-A web app for turning raw footage into polished personal-branding videos for Instagram Reels and TikTok. It runs on iPhone and desktop, and FFmpeg does all the rendering.
+A web app for turning raw footage into polished personal-branding videos for Instagram Reels and TikTok. It runs on iPhone and desktop.
 
-> **Status: Stages 1–2 are complete.** Upload, preview, framing, colour grading, slow motion, fades, loudness balancing, **Deepgram-powered automatic subtitles with editable, animated premium captions**, and verified 1080p export all work end to end.
-> The AI editing assistant comes in Stage 3. The app reports it as **not yet available**, and nothing about it is simulated.
+**Zero running cost.** Everything runs on your own computer with free, open-source tools: FFmpeg renders the video, and Whisper (OpenAI's open-source speech model, run locally) transcribes speech. There are no accounts, API keys, subscriptions or hosting fees. Your footage never leaves your computer.
 
 ## Quick start
 
-Requirements: **Node.js 22+** and **FFmpeg 6+** with `libx264`. For HDR footage and later captions you also need `zscale` (libzimg) and `libass`. The standard Ubuntu/Debian and Homebrew `ffmpeg` packages include all of these.
+You need two free tools:
+
+| | macOS | Windows |
+|---|---|---|
+| **Node.js 20+** | `brew install node`, or the installer from nodejs.org | installer from nodejs.org, or `winget install OpenJS.NodeJS.LTS` |
+| **FFmpeg** | `brew install ffmpeg` | `winget install Gyan.FFmpeg` |
+
+Then, in the project folder:
 
 ```bash
 npm install
-npm run build          # builds the web client
-npm start              # http://localhost:8787 (serves API + client)
+npm start
 ```
 
-For development, run hot-reloading client and server together:
+`npm start` builds the interface and starts the editor. It prints two addresses:
 
-```bash
-npm run dev            # client on :5173 (proxies /api → :8787)
+```
+On this computer:  http://localhost:8787
+On your iPhone:    http://192.168.1.23:8787   (same Wi-Fi)
 ```
 
-To open it on your iPhone, start the server on your computer, then visit `http://<computer-LAN-IP>:8787` (or `:5173` in dev) on the same Wi-Fi network.
+**On your iPhone:** join the same Wi-Fi as the computer and open the "On your iPhone" address in Safari. You can upload straight from Photos or Files. Tip: tap Share → Add to Home Screen to use it like an app.
 
-Tests (these run real FFmpeg renders and check the output with ffprobe):
+> The computer must stay on, with `npm start` running, while you edit. On macOS, if a firewall prompt appears the first time, click **Allow** so your iPhone can connect.
 
-```bash
-npm test
-npm run typecheck
-```
+The first time you generate subtitles, the free Whisper model downloads once (241 MB, or 76 MB for the faster model). After that, it works offline.
+
+For development, `npm run dev` runs a hot-reloading client and server. Tests (`npm test`) run real FFmpeg renders and real Whisper.
+
+## The workflow
+
+1. **Upload** footage (MP4/MOV, including iPhone 4K HEVC and HDR, up to 20 GB).
+2. **Describe your edit** in the *Direct* tab, for example "Vertical for Reels, cinematic look, add bold captions with gold highlight, fade out at the end". The editor shows exactly what it will change, and anything it didn't understand, before you apply it.
+3. **Preview** instantly in the editor, and fine-tune in the Frame, Look, Motion, Audio and Captions tabs.
+4. **Export** a 1080p MP4 and download it.
 
 ## What works today
 
 | Area | Features |
 |---|---|
-| **Upload** | MP4 / MOV / M4V, up to 4 GB by default. Shows real byte-level progress and can be cancelled. Every file is checked with ffprobe; non-video and corrupt files are rejected with a clear message. iPhone rotation metadata is honoured. |
-| **Preview** | Generates a smooth H.264 preview proxy, a poster frame and a timeline filmstrip. HDR (HLG/Dolby Vision/PQ) iPhone footage is tone-mapped to SDR so colours don't wash out. |
+| **Upload** | Resumable chunked upload (8 MB chunks with automatic retry). If the iPhone locks or the Wi-Fi drops, it continues from where it stopped, and it keeps the screen awake while uploading. Accepts MP4, MOV and iPhone HEVC/HDR from Photos or Files, up to 20 GB, with speed and time remaining shown. Files are checked by their **content** with ffprobe, not by file name. |
+| **Preview** | Generates a smooth H.264 preview, a poster frame and a timeline filmstrip. HDR (HLG/Dolby Vision/PQ) iPhone footage is tone-mapped to SDR after downscaling: a 10 s 4K/60 HDR clip is ready in about 9 s. |
+| **Direct (plain English)** | Type what you want. A local interpreter (free, no AI service) maps it to edits for format, framing, looks, speed, trimming and length, fades, sound and captions. It previews the changes, lists anything it didn't understand, and applies on confirmation. |
 | **Framing** | 9:16, 1:1 and 16:9. *Fill frame* crops the video and lets you move the subject position. *Full shot* fits the whole video over a blurred backdrop. |
 | **Colour** | Seven grades (Natural, Cinematic, Warm Luxe, Noir, Clean Bright, Film Fade, Emerald), each with an intensity slider, plus an optional vignette. The live preview approximates the grade with CSS. **Show exact rendered frame** renders the real FFmpeg frame. |
 | **Motion** | Trim with drag handles that work with touch. Speed from 0.5× to 2× with pitch preserved. Optional motion-interpolated smooth slow motion. Fade in and fade out. |
 | **Sound** | EBU R128 loudness normalisation to −14 LUFS / −1.5 dBTP, the Instagram/TikTok target, plus a volume control. |
 | **Export** | 1080p H.264 High profile (CRF 18) with 48 kHz AAC, BT.709 colour and faststart MP4. Progress streams live over SSE, with polling as a fallback, and exports can be cancelled. **Every export is checked with ffprobe** (dimensions and duration) before it is marked done. |
-| **Subtitles** | Transcribes speech with **Deepgram Nova-3** (word-level timestamps, smart formatting, auto language detection, optional name/brand key terms) and turns it into synchronised captions. Shows a cost estimate before you run it. |
+| **Subtitles** | Transcribes speech **locally with open-source Whisper** (transformers.js and ONNX Runtime, in a background thread) with word-level timestamps, in 20+ languages including Khmer. Two models: Best (small) and Fast (base). Free and private. |
 | **Caption editing** | Edit text inline; word timings are kept, or redistributed if you add or remove words. Nudge start and end by 0.1 s, merge or delete captions, add a caption at the playhead, and choose Punchy, Balanced or Full-line caption lengths. Changes autosave and are validated on the server. |
 | **Caption design** | Four typography presets: Bold Pop (Poppins ExtraBold), Editorial (DM Serif Display), Minimal (Poppins on a soft panel) and Impact (Anton). Word-by-word highlight synced to speech, six highlight colours, top/centre/bottom placement that clears the Reels/TikTok interface, and size control. Captions are burned into the export with libass using the **same bundled font files** the preview uses, so preview and export match. |
 | **Reliability** | Edits autosave and are validated on the server. A render uses a snapshot of the edit taken when export starts, so later changes don't affect it. Writes are atomic. If the server restarts mid-job, the job is marked failed rather than left looking "done", and can be retried. |
@@ -60,7 +73,9 @@ web/  (React 19 + Vite, TypeScript)           server/  (Node 22 + Express 5, Typ
 └──────────────────────────────┘                │ Pipeline    ingest · export · still  │
                                                 │ render.ts   pure FFmpeg graph builder│
                                                 │ ffmpeg.ts   probe · run w/ progress  │
-                                                │ deepgram.ts transcription (key server-side)│
+                                                │ whisper/    local speech-to-text worker│
+                                                │ instructions.ts plain-English → edits│
+                                                │ uploads.ts  resumable chunked uploads│
                                                 │ captions.ts grouping · editing · ASS │
                                                 └──────────────────────────────────────┘
 ```
@@ -77,9 +92,11 @@ Key design decisions:
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/health` | FFmpeg capabilities, formats, looks and AI feature availability |
-| POST | `/api/projects` | Upload (`multipart/form-data`, field `video`) and start ingest |
+| POST | `/api/uploads` → PUT `/api/uploads/:id?offset=` → POST `/api/uploads/:id/complete` | Resumable chunked upload (used by the app) |
+| POST | `/api/projects` | Single-request upload (`multipart/form-data`, field `video`) |
+| POST | `/api/projects/:id/instructions` | Plain-English edit instructions (`{ text, apply }`) |
 | GET / PATCH / DELETE | `/api/projects/:id` | Read, edit (`{ name?, edit?, captions?: { style?, segments? } }`) or delete a project |
-| POST | `/api/projects/:id/transcribe` | Start Deepgram transcription (`{ language: "auto" \| "multi" \| "en" …, keyterms?: string[] }`) |
+| POST | `/api/projects/:id/transcribe` | Start local Whisper transcription (`{ language: "en" \| "km" \| …, model: "small" \| "base" }`) |
 | POST | `/api/projects/:id/captions/regroup` | Rebuild captions from the transcript (`{ chunking: "punchy" \| "balanced" \| "lines" }`) |
 | GET | `/api/fonts/:file` | Bundled caption fonts (OFL), used by the browser preview |
 | POST | `/api/projects/:id/reprocess` | Retry a failed ingest |
@@ -91,27 +108,13 @@ Key design decisions:
 
 ## Roadmap
 
-| Stage | Scope | External needs |
+| Stage | Scope | Cost |
 |---|---|---|
-| **1 · Foundation** ✅ | Everything listed above | FFmpeg only |
-| **2 · Subtitles** ✅ | Deepgram transcription, caption editor, animated premium caption presets, burned-in export | `DEEPGRAM_API_KEY` |
-| **3 · AI director** | Audio and scene analysis with FFmpeg (`silencedetect`, `ebur128`, `scdet`) plus the transcript, sent to Claude. Claude returns a reviewable edit plan: hook, key moments, cuts to remove filler and silence, story order, titles and highlighted phrases. Natural-language prompts ("make it punchier, 30 seconds, end on the call to action") become validated edit patches | `ANTHROPIC_API_KEY` |
-| **4 · Storytelling timeline** | Multi-clip cut lists, transitions between cuts (`xfade`), cinematic push-in and Ken Burns zooms, elegant title cards and lower thirds, highlighted spoken phrases, and a brand kit (fonts, colours, logo) | — |
-| **5 · Production** | Docker image, sign-in, S3/R2 storage, Redis/BullMQ worker queue for parallel renders, HTTPS deployment | Hosting, storage bucket |
+| **1 · Foundation** ✅ | Upload, preview, framing, grading, speed, fades, loudness, verified 1080p export | $0 |
+| **2 · Subtitles** ✅ | Local Whisper transcription, caption editor, animated premium caption presets, burned-in export | $0 |
+| **2.5 · Direct** ✅ | Plain-English instructions interpreted locally | $0 |
+| **3 · Smart editing** | Automatic silence and filler-word removal, highlight detection from transcript and audio energy, multi-clip cut lists, transitions (`xfade`), cinematic push-in zooms, title cards, phrase highlights, brand kit | $0 (FFmpeg + local analysis) |
 
-## External services and keys
+### About AI services and cost
 
-Stage 1 needs none. Stage 2 needs a Deepgram key. Everything else is optional or comes in later stages.
-
-### Security of keys
-
-- API keys are read **only by the server** from environment variables or `.env`, which is git-ignored. They are never in frontend code, never sent to the browser, never included in API responses, and never logged. Tests check this.
-- The browser calls *your* server, and your server calls Deepgram. Audio goes server → Deepgram over HTTPS.
-- If anyone besides you can reach the server, set `APP_PASSWORD`. Otherwise anyone who finds the URL can spend your Deepgram credit.
-
-
-- **Claude API (Anthropic)**: powers the AI director (Stage 3), using model `claude-opus-5-5` with structured outputs so plans come back as valid JSON. You need an API key from console.anthropic.com, set as `ANTHROPIC_API_KEY`. It is billed per token, and a typical analysis of a 1–3 minute clip transcript is a small request.
-- **Deepgram (Stage 2, in use)**: Nova-3 pre-recorded transcription, set via `DEEPGRAM_API_KEY`. Pay-as-you-go pricing (deepgram.com/pricing, checked Nov 2026) is **$0.0043/min** (single language), **$0.0052/min** in mixed-language mode, and **+$0.0013/min** if you add key terms. New accounts get **$200 of free credit with no card required**, which is about 775 hours of audio. A 60-second Reel costs about **$0.004**. Smart formatting and punctuation are included at no extra cost. The editor shows an estimate before every transcription.
-- **Infrastructure**: any Linux host with FFmpeg. Rendering is CPU-heavy, so use at least 2 vCPU and 4 GB RAM for comfortable 1080p exports. Uploads and renders need disk space, roughly 3× the source size per project.
-
-Copy `.env.example` to `.env` (or export the variables) to configure the server.
+The project is designed to cost nothing beyond what you already pay for. Note that **a Claude.ai subscription doesn't include Claude API access**: the API is billed separately per use. So this app doesn't call any paid AI service. Plain-English editing uses a local, rule-based interpreter. It's free, private and predictable, but it only understands the kinds of instructions listed above. A smarter free option would be a local language model (for example via Ollama), which needs a fairly powerful computer. Any feature that requires payment will only be added with your explicit approval.

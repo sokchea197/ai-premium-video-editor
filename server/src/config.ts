@@ -12,10 +12,9 @@ export interface AppConfig {
   ffprobePath: string;
   x264Preset: string;
   fontsDir: string;
-  /** Server-side only. Never sent to the browser. */
-  deepgramApiKey: string | null;
-  deepgramBaseUrl: string;
-  deepgramModel: string;
+  /** Where free Whisper models are cached after their one-time download. */
+  whisperCacheDir: string;
+  whisperModel: "base" | "small";
   /** Optional shared password protecting the whole app (HTTP Basic auth). */
   appPassword: string | null;
 }
@@ -30,9 +29,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ffprobePath: process.env.FFPROBE_PATH ?? "ffprobe",
     x264Preset: process.env.X264_PRESET ?? "fast",
     fontsDir: path.join(root, "server", "assets", "fonts"),
-    deepgramApiKey: process.env.DEEPGRAM_API_KEY?.trim() || null,
-    deepgramBaseUrl: process.env.DEEPGRAM_BASE_URL ?? "https://api.deepgram.com",
-    deepgramModel: process.env.DEEPGRAM_MODEL ?? "nova-3",
+    whisperCacheDir: process.env.WHISPER_CACHE_DIR ?? path.join(process.env.DATA_DIR ?? path.join(root, "data"), "models"),
+    whisperModel: process.env.WHISPER_MODEL === "base" ? "base" : "small",
     appPassword: process.env.APP_PASSWORD?.trim() || null,
     ...overrides,
   };

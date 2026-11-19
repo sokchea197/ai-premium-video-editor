@@ -12,7 +12,8 @@ import { LOOKS } from "./lib/looks.js";
 import { Pipeline } from "./lib/pipeline.js";
 import { ProjectStore, type Project } from "./lib/store.js";
 import { CHUNKING, PRESETS, captionStyleSchema, groupWords, validateSegments } from "./lib/captions.js";
-import { TranscriptionError } from "./lib/deepgram.js";
+import { WHISPER_MODELS, WhisperTranscriber, type Transcriber } from "./lib/whisper/index.js";
+import { interpret } from "./lib/instructions.js";
 import { timingSafeEqual } from "node:crypto";
 import { UploadError, UploadManager } from "./lib/uploads.js";
 
@@ -33,7 +34,7 @@ class HttpError extends Error {
   }
 }
 
-export async function createApp(overrides: Partial<AppConfig> = {}) {
+export async function createApp(overrides: Partial<AppConfig> = {}, deps: { transcriber?: Transcriber } = {}) {
   const cfg = loadConfig(overrides);
   const caps = await ffmpegCapabilities(cfg.ffmpegPath);
   if (!caps.available) throw new Error(`FFmpeg not found at "${cfg.ffmpegPath}". Install FFmpeg or set FFMPEG_PATH.`);
@@ -42,14 +43,15 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
   const store = new ProjectStore(cfg.dataDir);
   await store.load();
   const jobs = new JobManager(cfg.concurrency);
-  const pipeline = new Pipeline(cfg, store, jobs, { zscale: caps.zscale, x264Preset: cfg.x264Preset });
+  const transcriber = deps.transcriber ?? new WhisperTranscriber(cfg.whisperCacheDir);
+  const pipeline = new Pipeline(cfg, store, jobs, { zscale: caps.zscale, x264Preset: cfg.x264Preset }, transcriber);
 
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "4mb" }));
 
   // Optional shared password for the whole app. Strongly recommended whenever the
-  // server is reachable from the internet, since transcription spends Deepgram credit.
+  // server is reachable from the internet (your footage and computer power are private).
   if (cfg.appPassword) {
     const expected = Buffer.from(cfg.appPassword);
     app.use((req, res, next) => {
@@ -94,11 +96,12 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
       looks: Object.entries(LOOKS).map(([id, l]) => ({ id, name: l.name, description: l.description })),
       maxUploadMb: Math.round(cfg.maxUploadBytes / 1024 / 1024),
       uploadChunkBytes: 8 * 1024 * 1024,
-      // Report real availability, never pretend. The API key itself is never sent.
+      // Report real availability, never pretend.
       ai: {
-        transcription: pipeline.transcriptionAvailable
-          ? { available: true, provider: "deepgram", model: cfg.deepgramModel, pricePerMinuteUsd: { standard: 0.0043, multilingual: 0.0052, keytermAddOn: 0.0013 } }
-          : { available: false, provider: "deepgram", reason: "The server has no DEEPGRAM_API_KEY configured." },
+        transcription: {
+          available: true, provider: "whisper", local: true, costUsd: 0, defaultModel: cfg.whisperModel,
+          models: Object.entries(WHISPER_MODELS).map(([id, m]) => ({ id, label: m.label, sizeMb: m.sizeMb })),
+        },
         editingAssistant: { available: false, reason: "Not yet implemented (stage 3)" },
       },
       captionPresets: Object.entries(PRESETS).map(([id, p]) => ({ id, ...p })),
@@ -274,23 +277,54 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
     const p = mustProject(req);
     const body = z
       .strictObject({
-        language: z.string().regex(/^(auto|multi|[a-z]{2,3}(-[A-Za-z0-9]{2,8})?)$/).default("auto"),
-        keyterms: z.array(z.string().trim().min(1).max(50)).max(20).default([]),
+        language: z.string().regex(/^[a-z]{2,3}$/).default("en"),
+        model: z.enum(["base", "small"]).default(cfg.whisperModel),
       })
       .safeParse(req.body ?? {});
     if (!body.success) throw new HttpError(400, "Invalid transcription options");
-    if (!pipeline.transcriptionAvailable) throw new HttpError(503, "Transcription is not configured: the server has no DEEPGRAM_API_KEY.");
     if (p.media.status !== "ready") throw new HttpError(409, "Wait until the footage has finished preparing.");
     if (!p.source.info.hasAudio) throw new HttpError(422, "This video has no audio track to transcribe.");
     if (p.transcription.status === "running") throw new HttpError(409, "Transcription is already running.");
-    let job;
-    try {
-      job = pipeline.startTranscribe(p, { language: body.data.language, keyterms: body.data.keyterms.filter(Boolean) });
-    } catch (e) {
-      if (e instanceof TranscriptionError) throw new HttpError(e.status ?? 500, e.message);
-      throw e;
-    }
+    const job = pipeline.startTranscribe(p, body.data);
     res.status(202).json({ job });
+  });
+
+  /**
+   * Plain-English editing instructions, interpreted locally (free, no AI service).
+   * apply=false returns the plan only; apply=true applies it (and starts free
+   * Whisper transcription if captions were requested but don't exist yet).
+   */
+  app.post("/api/projects/:id/instructions", async (req, res) => {
+    const p = mustProject(req);
+    const body = z
+      .strictObject({ text: z.string().trim().min(1).max(2000), apply: z.boolean().default(false), language: z.string().regex(/^[a-z]{2,3}$/).default("en") })
+      .safeParse(req.body ?? {});
+    if (!body.success) throw new HttpError(400, "Please type an instruction.");
+    const plan = interpret(body.data.text, p.edit, p.source.info.durationSec);
+    if (plan.transcribe && !p.source.info.hasAudio) {
+      plan.transcribe = false;
+      plan.notUnderstood.push("captions (this clip has no audio)");
+    }
+    const needsTranscript = plan.transcribe && !p.captions && p.transcription.status !== "running";
+    if (!body.data.apply) return res.json({ plan, willTranscribe: needsTranscript });
+    if (!plan.changes.length) throw new HttpError(422, "I couldn't find any edits I know how to make in that instruction.");
+
+    const edit = editSchema.safeParse({ ...p.edit, ...plan.edit });
+    if (!edit.success) throw new HttpError(400, "That instruction produced an invalid edit.");
+    try {
+      segment(edit.data, p.source.info.durationSec);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    const updated = await store.update(p.id, (proj) => {
+      proj.edit = edit.data;
+      if (proj.captions && Object.keys(plan.captionStyle).length)
+        proj.captions = { ...proj.captions, style: captionStyleSchema.parse({ ...proj.captions.style, ...plan.captionStyle }) };
+    });
+    let job = null;
+    if (needsTranscript && p.media.status === "ready")
+      job = pipeline.startTranscribe(updated!, { language: body.data.language, model: cfg.whisperModel, style: plan.captionStyle });
+    res.json({ plan, project: publicProject(store.get(p.id)!), job });
   });
 
   app.post("/api/projects/:id/captions/regroup", async (req, res) => {

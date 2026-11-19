@@ -62,7 +62,7 @@ describe("upload → preview → edit → export", () => {
   it("reports capabilities honestly", async () => {
     const res = await request(ctx.app).get("/api/health");
     expect(res.body.ffmpeg.libx264).toBe(true);
-    expect(res.body.ai.transcription.available).toBe(false);
+    expect(res.body.ai.transcription).toMatchObject({ available: true, provider: "whisper", costUsd: 0 });
   });
 
   it("rejects non-video uploads with clear errors", async () => {

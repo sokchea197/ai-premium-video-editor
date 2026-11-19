@@ -96,7 +96,7 @@ export interface Project {
   exports: ExportRecord[];
   transcript: Transcript | null;
   captions: Captions | null;
-  transcription: { status: "idle" | "running" | "failed"; jobId?: string; error?: string; language?: string };
+  transcription: { status: "idle" | "running" | "failed"; jobId?: string; error?: string; language?: string; model?: string };
   urls: { proxy: string | null; thumb: string | null; filmstrip: string | null };
 }
 
@@ -116,7 +116,7 @@ export interface Health {
   looks: { id: LookId; name: string; description: string }[];
   maxUploadMb: number;
   ai: {
-    transcription: { available: boolean; reason?: string; model?: string; pricePerMinuteUsd?: { standard: number; multilingual: number; keytermAddOn: number } };
+    transcription: { available: boolean; local?: boolean; costUsd?: number; defaultModel?: "base" | "small"; models?: { id: "base" | "small"; label: string; sizeMb: number }[] };
     editingAssistant: { available: boolean; reason?: string };
   };
   captionPresets: PresetDef[];

@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { defaultEdit, editSchema, type EditSettings } from "./edit.js";
 import type { MediaInfo } from "./ffmpeg.js";
-import type { Transcript } from "./deepgram.js";
+import type { Transcript } from "./transcript.js";
 import { captionStyleSchema, type Captions } from "./captions.js";
 
 export type MediaStatus = "processing" | "ready" | "failed";
@@ -36,7 +36,7 @@ export interface Project {
   exports: ExportRecord[];
   transcript: Transcript | null;
   captions: Captions | null;
-  transcription: { status: "idle" | "running" | "failed"; jobId?: string; error?: string; language?: string };
+  transcription: { status: "idle" | "running" | "failed"; jobId?: string; error?: string; language?: string; model?: string };
 }
 
 /**

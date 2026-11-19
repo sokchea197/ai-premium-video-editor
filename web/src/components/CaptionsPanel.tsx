@@ -10,7 +10,7 @@ interface Props {
   health: Health | null;
   job: Job | null;
   time: number;
-  onTranscribe: (language: string, keyterms: string[]) => void;
+  onTranscribe: (language: string, model: "base" | "small") => void;
   onCancel: () => void;
   onStyle: (patch: Partial<CaptionStyle>) => void;
   onSegments: (segments: CaptionSegment[]) => void;
@@ -35,7 +35,7 @@ export function CaptionsPanel(props: Props) {
           <div className="bar bar--gold"><div className="bar__fill" style={{ width: `${(job?.progress ?? 0) * 100}%` }} /></div>
           <button className="link" onClick={props.onCancel}>Cancel</button>
         </div>
-        <p className="fineprint">Your audio is sent securely from the server to Deepgram. Your API key never leaves the server.</p>
+        <p className="fineprint">Whisper runs privately on the computer running the editor. Nothing is uploaded anywhere and it's free.</p>
       </div>
     );
   }
@@ -44,12 +44,7 @@ export function CaptionsPanel(props: Props) {
       <div className="panel">
         <h4 className="panel__title">Subtitles</h4>
         {project.transcription.status === "failed" && <div className="notice notice--error">{project.transcription.error}</div>}
-        {t?.available ? <GenerateForm {...props} /> : (
-          <div className="notice">
-            <p><strong>Automatic subtitles aren't set up yet.</strong></p>
-            <p className="muted" style={{ marginTop: 6 }}>Add a Deepgram API key to the server as <code>DEEPGRAM_API_KEY</code> (in <code>.env</code>), then restart it. The key stays on the server and is never sent to your browser.</p>
-          </div>
-        )}
+        {t?.available ? <GenerateForm {...props} /> : <div className="notice">Automatic subtitles are unavailable on this server.</div>}
       </div>
     );
   }
@@ -57,13 +52,12 @@ export function CaptionsPanel(props: Props) {
 }
 
 function GenerateForm({ project, health, onTranscribe, captions }: Props) {
-  const [language, setLanguage] = useState(project.transcription.language ?? "auto");
-  const [terms, setTerms] = useState("");
-  const keyterms = terms.split(",").map((s) => s.trim()).filter(Boolean);
-  const price = health?.ai.transcription.pricePerMinuteUsd;
+  const t = health?.ai.transcription;
+  const [language, setLanguage] = useState(project.transcription.language ?? "en");
+  const [model, setModel] = useState<"base" | "small">((project.transcription.model as "base" | "small") ?? t?.defaultModel ?? "small");
+  const models = t?.models ?? [];
+  const chosen = models.find((m) => m.id === model);
   const minutes = project.source.info.durationSec / 60;
-  const rate = price ? (language === "multi" ? price.multilingual : price.standard) + (keyterms.length ? price.keytermAddOn : 0) : 0;
-  const cost = minutes * rate;
 
   return (
     <>
@@ -74,18 +68,28 @@ function GenerateForm({ project, health, onTranscribe, captions }: Props) {
           {LANGUAGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
       </label>
-      <label className="field">
-        <span>Names &amp; brand terms <small className="muted">(optional, comma-separated)</small></span>
-        <input type="text" placeholder="e.g. Sokchea, Premium Studio" value={terms} onChange={(e) => setTerms(e.target.value)} />
-      </label>
+      <div>
+        <p className="field-label">Accuracy</p>
+        <div className="segmented segmented--compact">
+          {models.map((m) => (
+            <button key={m.id} className={model === m.id ? "is-active" : ""} onClick={() => setModel(m.id)}>
+              <span>{m.label}</span><small>{m.id === "small" ? "Recommended" : "Quicker"}</small>
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="estimate">
-        <span>Estimated Deepgram cost</span>
-        <strong>{cost < 0.01 ? "< $0.01" : `≈ $${cost.toFixed(2)}`}</strong>
-        <small className="muted">{minutes.toFixed(1)} min of audio × ${rate.toFixed(4)}/min{keyterms.length ? " (includes key terms add-on)" : ""}. Billed by Deepgram to your account.</small>
+        <span>Cost</span>
+        <strong>Free</strong>
+        <small className="muted">
+          Open-source Whisper runs on your own computer. Nothing leaves it and there's no account.
+          {chosen && <> First use downloads the {chosen.label.toLowerCase()} model once ({chosen.sizeMb} MB).</>}
+          {minutes > 0.5 && <> Expect roughly {Math.max(1, Math.round(minutes * (model === "small" ? 20 : 10)))}–{Math.max(2, Math.round(minutes * (model === "small" ? 40 : 20)))} s for this clip.</>}
+        </small>
       </div>
       <button className="btn btn--gold btn--block" onClick={() => {
         if (captions?.edited && !confirm("Re-transcribing replaces your edited captions. Continue?")) return;
-        onTranscribe(language, keyterms);
+        onTranscribe(language, model);
       }}>
         <Icon name="sparkle" /> Generate subtitles
       </button>
@@ -251,7 +255,7 @@ function CaptionEditor({ project, captions, health, time, onStyle, onSegments, o
       <button className="link" onClick={() => setShowRedo((x) => !x)}>{showRedo ? "Hide" : "Re-transcribe this clip…"}</button>
       {showRedo && <GenerateForm project={project} captions={captions} health={health} time={time} onStyle={onStyle} onSegments={onSegments} onRegroup={onRegroup} onSeek={onSeek} {...rest} />}
       {project.transcript && (
-        <p className="fineprint">Transcribed by Deepgram {project.transcript.model}{project.transcript.language ? ` · ${project.transcript.language}` : ""}. Edits are saved automatically and burned into your export with the same fonts you see here.</p>
+        <p className="fineprint">Transcribed locally by {project.transcript.model}{project.transcript.language ? ` · ${project.transcript.language}` : ""}. Edits save automatically and are burned into your export with the same fonts you see here.</p>
       )}
     </div>
   );

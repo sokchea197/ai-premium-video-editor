@@ -294,6 +294,21 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .chip { height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line-2); font-size: 12.5px; }
 .chip--danger { color: var(--danger); border-color: rgba(224,120,107,.35); }
 
+/* ---------- direct (plain-English editing) ---------- */
+.direct__input { width: 100%; min-height: 96px; resize: vertical; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line-2); background: var(--surface); color: var(--text); font: inherit; font-size: 16px; line-height: 1.45; }
+.direct__input:focus { outline: none; border-color: var(--gold); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips .chip { height: auto; min-height: 32px; padding: 6px 12px; text-align: left; color: var(--text-2); }
+.chips .chip:hover { border-color: rgba(201,169,110,.5); color: var(--text); }
+.plan { display: grid; gap: 12px; padding: 16px; border-radius: var(--radius-sm); border: 1px solid rgba(201, 169, 110, 0.3); background: rgba(201, 169, 110, 0.04); }
+.plan__head { font-size: 13.5px; }
+.plan__list { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13.5px; color: var(--text-2); }
+.plan__list li::marker { color: var(--gold); }
+.plan__skip { font-size: 12.5px; color: var(--muted); }
+.plan__skip ul { margin: 4px 0 0; padding-left: 18px; }
+.plan__actions { display: flex; gap: 10px; justify-content: flex-end; align-items: center; }
+.plan__done { margin-right: auto; color: var(--ok); font-size: 13.5px; }
+
 /* ---------- mobile ---------- */
 @media (max-width: 860px) {
   .editor__body { display: flex; flex-direction: column; }

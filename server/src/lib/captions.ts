@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import type { TranscriptWord } from "./deepgram.js";
+import type { TranscriptWord } from "./transcript.js";
 
 // ---------------- model ----------------
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildAss, defaultCaptionStyle, escapeFilterPath, groupWords, retimeText, validateSegments, type Captions } from "../src/lib/captions.js";
-import { buildListenUrl, parseDeepgramResponse } from "../src/lib/deepgram.js";
+import { planChunks, SAMPLE_RATE } from "../src/lib/whisper/chunks.js";
 
 const words = [
   ["Hi,", 0.1, 0.3], ["I'm", 0.35, 0.5], ["Sokchea.", 0.55, 1.0],
@@ -92,26 +92,21 @@ describe("ASS rendering", () => {
   });
 });
 
-describe("Deepgram request & response", () => {
-  it("builds the listen URL", () => {
-    const u = buildListenUrl({ baseUrl: "https://api.deepgram.com", model: "nova-3", language: "auto", keyterms: ["Sokchea", "Premium Studio"] });
-    expect(u.pathname).toBe("/v1/listen");
-    expect(u.searchParams.get("model")).toBe("nova-3");
-    expect(u.searchParams.get("detect_language")).toBe("true");
-    expect(u.searchParams.getAll("keyterm")).toEqual(["Sokchea", "Premium Studio"]);
-    expect(buildListenUrl({ baseUrl: "https://x.test", model: "nova-3", language: "fr" }).searchParams.get("language")).toBe("fr");
+describe("Whisper audio chunking", () => {
+  it("keeps short audio in one chunk", () => {
+    expect(planChunks(new Float32Array(SAMPLE_RATE * 10))).toEqual([{ start: 0, end: SAMPLE_RATE * 10 }]);
   });
-
-  it("parses punctuated words and detected language", () => {
-    const t = parseDeepgramResponse({
-      metadata: { request_id: "r1", duration: 4.2 },
-      results: { channels: [{ detected_language: "en", alternatives: [{ words: [
-        { word: "hello", punctuated_word: "Hello,", start: 0.1, end: 0.4, confidence: 0.98 },
-        { word: "bad", start: 2, end: 1, confidence: 0.5 },
-      ] }] }] },
-    }, "nova-3");
-    expect(t.words).toEqual([{ text: "Hello,", start: 0.1, end: 0.4, confidence: 0.98 }]);
-    expect(t).toMatchObject({ language: "en", requestId: "r1", audioDurationSec: 4.2 });
+  it("splits long audio into <=28 s windows, cutting in the quietest gap", () => {
+    // 70 s of "speech" (noise) with silent gaps at 26 s and 53 s
+    const a = new Float32Array(SAMPLE_RATE * 70).map(() => Math.random() * 0.5 - 0.25);
+    for (const gap of [26, 53]) a.fill(0, gap * SAMPLE_RATE, (gap + 0.3) * SAMPLE_RATE);
+    const chunks = planChunks(a);
+    expect(chunks.length).toBe(3);
+    for (const c of chunks) expect(c.end - c.start).toBeLessThanOrEqual(28 * SAMPLE_RATE);
+    expect(chunks[0].end / SAMPLE_RATE).toBeGreaterThanOrEqual(26);
+    expect(chunks[0].end / SAMPLE_RATE).toBeLessThanOrEqual(26.3);
+    expect(chunks[2].end).toBe(a.length);
+    for (let i = 1; i < chunks.length; i++) expect(chunks[i].start).toBe(chunks[i - 1].end);
   });
 });
 

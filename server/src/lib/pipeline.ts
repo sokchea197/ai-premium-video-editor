@@ -4,8 +4,8 @@ import type { AppConfig } from "../config.js";
 import { probe, runFfmpeg, FfmpegError } from "./ffmpeg.js";
 import type { JobManager } from "./jobs.js";
 import { buildExportArgs, buildFilmstripArgs, buildProxyArgs, buildStillArgs, stillTime, type CaptionBurnIn, type RenderEnv } from "./render.js";
-import { buildAss, defaultCaptionStyle, groupWords, type Captions } from "./captions.js";
-import { transcribeWithDeepgram, TranscriptionError } from "./deepgram.js";
+import { buildAss, captionStyleSchema, defaultCaptionStyle, groupWords, type CaptionStyle, type Captions } from "./captions.js";
+import { WHISPER_MODELS, type Transcriber, type WhisperModel } from "./whisper/index.js";
 import { ASPECTS, segment } from "./edit.js";
 import type { ExportRecord, Project, ProjectStore } from "./store.js";
 
@@ -15,6 +15,7 @@ export class Pipeline {
     private store: ProjectStore,
     private jobs: JobManager,
     private env: RenderEnv,
+    private transcriber: Transcriber,
   ) {}
 
   /** Creates preview proxy, poster thumbnail and timeline filmstrip. */
@@ -163,65 +164,48 @@ export class Pipeline {
     return { assPath: this.store.file(projectId, name), fontsDir: this.cfg.fontsDir };
   }
 
-  get transcriptionAvailable() {
-    return Boolean(this.cfg.deepgramApiKey);
-  }
-
-  /** Extracts speech audio and transcribes it with Deepgram, then builds captions. */
-  startTranscribe(project: Project, opts: { language: string; keyterms: string[] }) {
-    const apiKey = this.cfg.deepgramApiKey;
-    if (!apiKey) throw new TranscriptionError("Transcription is not configured: the server has no DEEPGRAM_API_KEY.", 503);
+  /** Transcribes speech locally with open-source Whisper, then builds captions. Free, no account. */
+  startTranscribe(project: Project, opts: { language: string; model: WhisperModel; style?: Partial<CaptionStyle> }) {
     const id = project.id;
     const job = this.jobs.enqueue("transcribe", id, async (ctx) => {
       const p = this.store.get(id);
       if (!p) throw new Error("Project was deleted");
       const src = this.store.file(id, p.source.fileName);
-      const audioPath = this.store.file(id, `speech-${job.id}.ogg`);
+      const pcmPath = this.store.file(id, `speech-${job.id}.f32`);
       try {
-        ctx.progress(0.02, "Extracting speech audio");
-        // Mono 16 kHz Opus: compact upload, ample quality for speech recognition.
-        await runFfmpeg(this.cfg.ffmpegPath, [
-          "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", audioPath,
-        ], { durationSec: p.source.info.durationSec, signal: ctx.signal, onProgress: (f) => ctx.progress(0.02 + f * 0.2) });
-        const audio = await fs.readFile(audioPath);
-
-        ctx.progress(0.25, "Transcribing with Deepgram");
-        // Deepgram gives no progress; ease the bar forward so the UI shows life, capped well below done.
-        const started = Date.now();
-        const expected = 4000 + p.source.info.durationSec * 120;
-        const ticker = setInterval(() => {
-          const f = 1 - Math.exp(-(Date.now() - started) / expected);
-          ctx.progress(0.25 + f * 0.6);
-        }, 400);
-        let transcript;
-        try {
-          transcript = await transcribeWithDeepgram(audio, "audio/ogg", {
-            apiKey, baseUrl: this.cfg.deepgramBaseUrl, model: this.cfg.deepgramModel,
-            language: opts.language, keyterms: opts.keyterms, signal: ctx.signal,
-          });
-        } finally {
-          clearInterval(ticker);
-        }
-
-        ctx.progress(0.92, transcript.words.length ? "Building synchronised captions" : "No speech detected");
+        ctx.progress(0.01, "Extracting speech audio");
+        // 16 kHz mono float PCM, which is what Whisper consumes.
+        await runFfmpeg(this.cfg.ffmpegPath, ["-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", pcmPath], {
+          durationSec: p.source.info.durationSec, signal: ctx.signal, onProgress: (f) => ctx.progress(0.01 + f * 0.07),
+        });
+        const buf = await fs.readFile(pcmPath);
+        const audio = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+        const size = WHISPER_MODELS[opts.model].sizeMb;
+        ctx.progress(0.1, "Loading Whisper speech model");
+        const transcript = await this.transcriber.transcribe({
+          audio, model: opts.model, language: opts.language, signal: ctx.signal,
+          onDownload: (f) => ctx.progress(0.1, `Downloading free Whisper model, one time only (${Math.round(f * size)} of ${size} MB)`),
+          onProgress: (f) => ctx.progress(0.12 + f * 0.83, "Transcribing speech on this computer"),
+        });
+        ctx.progress(0.97, transcript.words.length ? "Building synchronised captions" : "No speech detected");
         await this.store.update(id, (proj) => {
-          const style = proj.captions?.style ?? defaultCaptionStyle();
+          const style = captionStyleSchema.parse({ ...(proj.captions?.style ?? defaultCaptionStyle()), ...(opts.style ?? {}) });
           proj.transcript = transcript;
           proj.captions = { style, segments: groupWords(transcript.words, style.chunking), edited: false };
         });
       } finally {
-        await fs.rm(audioPath, { force: true });
+        await fs.rm(pcmPath, { force: true });
       }
     });
     void this.store.update(id, (p) => {
-      p.transcription = { status: "running", jobId: job.id, language: opts.language };
+      p.transcription = { status: "running", jobId: job.id, language: opts.language, model: opts.model };
     });
     void this.jobs.wait(job.id).then((j) =>
       this.store.update(id, (p) => {
         p.transcription =
           j.status === "done"
-            ? { status: "idle", language: opts.language }
-            : { status: "failed", jobId: j.id, error: j.status === "cancelled" ? "Transcription was cancelled." : j.error ?? "Transcription failed", language: opts.language };
+            ? { status: "idle", language: opts.language, model: opts.model }
+            : { status: "failed", jobId: j.id, error: j.status === "cancelled" ? "Transcription was cancelled." : j.error ?? "Transcription failed", language: opts.language, model: opts.model };
       }),
     );
     return job;

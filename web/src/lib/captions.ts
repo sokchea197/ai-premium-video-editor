@@ -45,8 +45,10 @@ export const segmentText = (s: CaptionSegment) => s.words.map((w) => w.text).joi
 
 export const HIGHLIGHTS = ["#E3CB98", "#FFFFFF", "#FFD84D", "#F2A7B5", "#9FE3C1", "#8EC5FF"];
 
+/** Languages Whisper transcribes (accuracy varies; English is strongest). */
 export const LANGUAGES = [
-  ["auto", "Auto-detect"], ["en", "English"], ["multi", "Mixed languages"], ["es", "Spanish"], ["fr", "French"],
-  ["de", "German"], ["it", "Italian"], ["pt", "Portuguese"], ["nl", "Dutch"], ["hi", "Hindi"], ["ja", "Japanese"],
-  ["ko", "Korean"], ["ru", "Russian"], ["zh", "Chinese"],
+  ["en", "English"], ["km", "Khmer"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"],
+  ["pt", "Portuguese"], ["nl", "Dutch"], ["th", "Thai"], ["vi", "Vietnamese"], ["id", "Indonesian"], ["ms", "Malay"],
+  ["tl", "Tagalog"], ["zh", "Chinese"], ["ja", "Japanese"], ["ko", "Korean"], ["hi", "Hindi"], ["ar", "Arabic"],
+  ["ru", "Russian"], ["uk", "Ukrainian"], ["pl", "Polish"], ["tr", "Turkish"], ["sv", "Swedish"],
 ] as const;
