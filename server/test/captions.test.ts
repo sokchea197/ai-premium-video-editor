@@ -28,6 +28,23 @@ describe("caption grouping", () => {
   });
 });
 
+describe("caption grouping on real speech patterns", () => {
+  const mk = (spec: [string, number, number][]) => spec.map(([text, start, end]) => ({ text, start, end, confidence: 1 }));
+  it("does not split after abbreviations like Mr.", () => {
+    const segs = groupWords(mk([["With", 0, 0.2], ["my", 0.25, 0.4], ["mentor,", 0.45, 0.9], ["Mr.", 0.95, 1.1], ["Chenda,", 1.15, 1.6], ["we", 1.65, 1.8]]), "balanced");
+    expect(segs.some((s) => s.words.length === 1 && s.words[0].text === "Mr.")).toBe(false);
+    expect(segs.map((s) => s.words.map((w) => w.text).join(" ")).join(" | ")).toContain("Mr. Chenda,");
+  });
+  it("keeps a sentence's last word with its line instead of stranding it", () => {
+    const segs = groupWords(mk([["welcome", 0, 0.3], ["to", 0.35, 0.45], ["the", 0.5, 0.6], ["second", 0.65, 1], ["episode", 1.05, 1.4], ["of", 1.45, 1.5], ["The", 1.55, 1.7], ["Learning", 1.75, 2.1], ["Table.", 2.15, 2.6]]), "balanced");
+    expect(segs.every((s) => s.words.length > 1)).toBe(true);
+  });
+  it("never overlaps captions even when word timings overlap", () => {
+    const segs = groupWords(mk([["we", 0, 0.3], ["are", 0.3, 0.5], ["still", 0.5, 0.8], ["trying.", 0.8, 1.6], ["One", 1.5, 1.7], ["thing", 1.7, 2]]), "balanced");
+    for (let i = 1; i < segs.length; i++) expect(segs[i].start).toBeGreaterThanOrEqual(segs[i - 1].end);
+  });
+});
+
 describe("caption editing", () => {
   const seg = { start: 1, end: 3, words: [{ text: "helo", start: 1, end: 1.5 }, { text: "world", start: 1.6, end: 2.4 }] };
   it("keeps word timings when the word count is unchanged", () => {

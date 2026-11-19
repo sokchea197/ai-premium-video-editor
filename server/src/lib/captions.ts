@@ -76,40 +76,47 @@ const LIMITS: Record<Chunking, { words: number; chars: number; dur: number }> = 
   lines: { words: 12, chars: 56, dur: 4.5 },
 };
 
+const ABBREVIATION = /^(mr|mrs|ms|dr|prof|st|sr|jr|vs|etc|e\.g|i\.e|no)\.$/i;
+const endsSentence = (t: string) => /[.!?…]["')\]]?$/.test(t) && !ABBREVIATION.test(t);
+
 /** Groups transcript words into readable, speech-synchronised caption segments. */
 export function groupWords(words: TranscriptWord[], chunking: Chunking): CaptionSegment[] {
   const lim = LIMITS[chunking];
-  const segments: CaptionSegment[] = [];
+  const groups: CaptionWord[][] = [];
   let cur: CaptionWord[] = [];
 
-  const flush = () => {
-    if (!cur.length) return;
-    segments.push({ id: randomUUID(), start: cur[0].start, end: cur[cur.length - 1].end, words: cur });
-    cur = [];
-  };
-
-  for (const w of words) {
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
     if (cur.length) {
       const last = cur[cur.length - 1];
       const chars = cur.reduce((n, x) => n + x.text.length + 1, 0) + w.text.length;
       const gap = w.start - last.end;
-      const sentenceEnd = /[.!?…]["')\]]?$/.test(last.text);
       const clauseEnd = /[,;:—–]$/.test(last.text) && cur.length >= Math.ceil(lim.words / 2);
-      if (cur.length >= lim.words || chars > lim.chars || gap > 0.6 || sentenceEnd || clauseEnd || w.end - cur[0].start > lim.dur) flush();
+      const full = cur.length >= lim.words || chars > lim.chars || w.end - cur[0].start > lim.dur;
+      // Don't strand a sentence's final word on its own: let it overflow the limit slightly.
+      const finishesSentence = chunking !== "punchy" && endsSentence(w.text) && cur.length < lim.words + 1 && chars <= lim.chars + 10 && gap < 0.4;
+      if (gap > 0.6 || endsSentence(last.text) || clauseEnd || (full && !finishesSentence)) {
+        groups.push(cur);
+        cur = [];
+      }
     }
-    cur.push({ text: w.text, start: w.start, end: w.end });
+    cur.push({ text: w.text, start: w.start, end: Math.max(w.start, w.end) });
   }
-  flush();
+  if (cur.length) groups.push(cur);
 
-  // Hold each caption a little after its last word (up to the next caption) so it is readable.
+  const segments: CaptionSegment[] = groups.map((g) => ({ id: randomUUID(), start: g[0].start, end: g[g.length - 1].end, words: g }));
+  // Hold each caption a little after its last word, but never overlap the next one
+  // (Whisper's word timings can overlap slightly at chunk boundaries).
   for (let i = 0; i < segments.length; i++) {
     const s = segments[i];
     const next = segments[i + 1];
-    const minEnd = s.start + 0.5;
-    const target = Math.max(s.end + 0.25, minEnd);
-    s.end = round(next ? Math.min(target, Math.max(s.end, next.start)) : target);
+    let end = Math.max(s.end + 0.25, s.start + 0.5);
+    if (next) end = Math.min(end, next.start);
+    end = Math.max(end, s.start + 0.1);
+    if (next && end > next.start) next.start = end; // pathological overlap: push next start
     s.start = round(s.start);
-    if (s.end - s.start < 0.1) s.end = round(s.start + 0.1);
+    s.end = round(end);
+    s.words = s.words.map((w) => ({ ...w, start: round(Math.min(Math.max(w.start, s.start), s.end)), end: round(Math.min(w.end, s.end)) }));
   }
   return segments;
 }
