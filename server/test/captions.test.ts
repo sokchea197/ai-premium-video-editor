@@ -39,6 +39,12 @@ describe("caption grouping on real speech patterns", () => {
     const segs = groupWords(mk([["welcome", 0, 0.3], ["to", 0.35, 0.45], ["the", 0.5, 0.6], ["second", 0.65, 1], ["episode", 1.05, 1.4], ["of", 1.45, 1.5], ["The", 1.55, 1.7], ["Learning", 1.75, 2.1], ["Table.", 2.15, 2.6]]), "balanced");
     expect(segs.every((s) => s.words.length > 1)).toBe(true);
   });
+  it("folds a lone trailing word into the previous caption", () => {
+    const segs = groupWords(mk([["comfortable", 0, 0.4], ["and", 0.45, 0.6], ["happy", 0.65, 0.9], ["while", 0.95, 1.1], ["wearing", 1.15, 1.4]]).concat(mk([["Style", -1, -0.9]]).slice(1)), "balanced");
+    expect(segs.every((s) => s.words.length > 1)).toBe(true);
+    const qa = groupWords(mk([["Did", 0, 0.2], ["we?", 0.25, 0.5], ["Absolutely.", 0.6, 1.2]]), "balanced");
+    expect(qa.map((s) => s.words.length)).toEqual([2, 1]);
+  });
   it("never overlaps captions even when word timings overlap", () => {
     const segs = groupWords(mk([["we", 0, 0.3], ["are", 0.3, 0.5], ["still", 0.5, 0.8], ["trying.", 0.8, 1.6], ["One", 1.5, 1.7], ["thing", 1.7, 2]]), "balanced");
     for (let i = 1; i < segs.length; i++) expect(segs[i].start).toBeGreaterThanOrEqual(segs[i - 1].end);

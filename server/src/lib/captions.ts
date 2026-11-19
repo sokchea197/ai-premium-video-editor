@@ -103,6 +103,18 @@ export function groupWords(words: TranscriptWord[], chunking: Chunking): Caption
     cur.push({ text: w.text, start: w.start, end: Math.max(w.start, w.end) });
   }
   if (cur.length) groups.push(cur);
+  // Fold a lone trailing word (e.g. speech cut mid-sentence) into the caption before it,
+  // unless that caption already ends a sentence ("Did we? | Absolutely." stays split).
+  if (chunking !== "punchy") {
+    for (let i = groups.length - 1; i > 0; i--) {
+      const g = groups[i], prev = groups[i - 1];
+      const last = prev[prev.length - 1];
+      const chars = [...prev, ...g].reduce((n, x) => n + x.text.length + 1, 0);
+      if (g.length === 1 && !endsSentence(last.text) && g[0].start - last.end < 0.3 && chars <= lim.chars + 12) {
+        groups.splice(i - 1, 2, [...prev, ...g]);
+      }
+    }
+  }
 
   const segments: CaptionSegment[] = groups.map((g) => ({ id: randomUUID(), start: g[0].start, end: g[g.length - 1].end, words: g }));
   // Hold each caption a little after its last word, but never overlap the next one
