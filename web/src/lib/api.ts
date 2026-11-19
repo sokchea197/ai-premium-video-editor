@@ -16,12 +16,17 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
-  } catch {
-    throw new ApiError("Can't reach the server. Check your connection.", 0);
+  } catch (e) {
+    if ((e as Error)?.name === "AbortError") throw new ApiError("Upload cancelled.", 0);
+    throw new ApiError("Can't reach the editor server. Make sure it's running on your computer and that this device is on the same Wi-Fi.", 0);
   }
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(body.error ?? `Request failed (${res.status})`, res.status, body.detail);
+  if (!res.ok) {
+    // A dev proxy answers 500/502/504 with no JSON when the API server is down.
+    if (!body.error && res.status >= 500) throw new ApiError("The editor server isn't responding. Make sure it's running (npm start).", res.status);
+    throw new ApiError(body.error ?? `Request failed (${res.status})`, res.status, body.detail);
+  }
   return body as T;
 }
 
@@ -51,30 +56,7 @@ export const api = {
     return URL.createObjectURL(await res.blob());
   },
 
-  /** XHR upload so we can show real byte-level progress (fetch can't). */
-  upload(file: File, onProgress: (fraction: number) => void): { promise: Promise<Project>; abort: () => void } {
-    const xhr = new XMLHttpRequest();
-    const promise = new Promise<Project>((resolve, reject) => {
-      const form = new FormData();
-      form.append("video", file, file.name);
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-      xhr.onload = () => {
-        let body: any = {};
-        try {
-          body = JSON.parse(xhr.responseText);
-        } catch {
-          /* non-JSON */
-        }
-        if (xhr.status === 201) resolve(body);
-        else reject(new ApiError(body.error ?? `Upload failed (${xhr.status})`, xhr.status));
-      };
-      xhr.onerror = () => reject(new ApiError("Upload failed — the connection was interrupted.", 0));
-      xhr.onabort = () => reject(new ApiError("Upload cancelled.", 0));
-      xhr.open("POST", "/api/projects");
-      xhr.send(form);
-    });
-    return { promise, abort: () => xhr.abort() };
-  },
+  upload: uploadVideo,
 };
 
 /**
@@ -121,5 +103,101 @@ export function followJob(jobId: string, onUpdate: (job: Job) => void): () => vo
     closed = true;
     es?.close();
     clearTimeout(timer);
+  };
+}
+
+
+export interface UploadProgress {
+  sent: number;
+  total: number;
+  /** bytes per second (smoothed) */
+  rate: number;
+  retrying: boolean;
+}
+
+/**
+ * Resumable chunked upload. Each 8 MB chunk is retried on its own, and after a
+ * dropped connection (screen lock, app switch, Wi-Fi blip) the upload resumes
+ * from the last byte the server confirmed instead of starting over.
+ */
+export function uploadVideo(file: File, onProgress: (p: UploadProgress) => void): { promise: Promise<Project>; abort: () => void } {
+  const ac = new AbortController();
+  let uploadId: string | null = null;
+  let wakeLock: { release(): Promise<void> } | null = null;
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const checkAbort = () => {
+    if (ac.signal.aborted) throw new ApiError("Upload cancelled.", 0);
+  };
+
+  const promise = (async () => {
+    // Keep the iPhone screen awake while uploading (iOS 16.4+); harmless if unsupported.
+    try {
+      wakeLock = await (navigator as any).wakeLock?.request("screen");
+    } catch {
+      /* not supported / not allowed */
+    }
+    const created = await req<{ id: string; chunkSize: number }>("/api/uploads", {
+      method: "POST",
+      body: JSON.stringify({ name: file.name || "video", size: file.size }),
+      signal: ac.signal,
+    });
+    uploadId = created.id;
+    let offset = 0;
+    let rate = 0;
+    let failures = 0;
+    while (offset < file.size) {
+      checkAbort();
+      const end = Math.min(file.size, offset + created.chunkSize);
+      const t0 = performance.now();
+      try {
+        const res = await fetch(`/api/uploads/${uploadId}?offset=${offset}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: file.slice(offset, end),
+          signal: ac.signal,
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 409 && typeof body.received === "number") {
+          offset = body.received; // server is ahead/behind: resync
+          continue;
+        }
+        if (!res.ok) {
+          if (res.status >= 400 && res.status < 500) throw new ApiError(body.error ?? `Upload failed (${res.status})`, res.status);
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const dt = (performance.now() - t0) / 1000;
+        const inst = (end - offset) / Math.max(dt, 0.001);
+        rate = rate ? rate * 0.7 + inst * 0.3 : inst;
+        offset = body.received;
+        failures = 0;
+        onProgress({ sent: offset, total: file.size, rate, retrying: false });
+      } catch (e) {
+        checkAbort();
+        if (e instanceof ApiError) throw e;
+        if (++failures > 8) throw new ApiError("Upload failed: the connection to the editor kept dropping. Check the Wi-Fi and try again.", 0);
+        onProgress({ sent: offset, total: file.size, rate, retrying: true });
+        await sleep(Math.min(15000, 800 * 2 ** (failures - 1)));
+        // Ask the server what it actually has, then continue from there.
+        try {
+          const st = await req<{ received: number }>(`/api/uploads/${uploadId}`, { signal: ac.signal });
+          offset = st.received;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) throw err;
+        }
+      }
+    }
+    onProgress({ sent: file.size, total: file.size, rate, retrying: false });
+    return req<Project>(`/api/uploads/${uploadId}/complete`, { method: "POST", body: "{}", signal: ac.signal });
+  })().finally(() => {
+    void wakeLock?.release().catch(() => {});
+  });
+
+  return {
+    promise,
+    abort: () => {
+      ac.abort();
+      if (uploadId) void fetch(`/api/uploads/${uploadId}`, { method: "DELETE" }).catch(() => {});
+    },
   };
 }

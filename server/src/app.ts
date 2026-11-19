@@ -14,8 +14,18 @@ import { ProjectStore, type Project } from "./lib/store.js";
 import { CHUNKING, PRESETS, captionStyleSchema, groupWords, validateSegments } from "./lib/captions.js";
 import { TranscriptionError } from "./lib/deepgram.js";
 import { timingSafeEqual } from "node:crypto";
+import { UploadError, UploadManager } from "./lib/uploads.js";
 
-const ALLOWED_EXT = new Set([".mp4", ".mov", ".m4v"]);
+const KNOWN_EXT = new Set([".mp4", ".mov", ".m4v", ".3gp", ".mkv", ".webm"]);
+
+/** Storage extension from the name if sensible, otherwise from the detected container. */
+function storageExt(originalName: string, formatName: string) {
+  const ext = path.extname(originalName).toLowerCase();
+  if (KNOWN_EXT.has(ext)) return ext;
+  if (/mov|mp4/.test(formatName)) return ".mov";
+  if (/matroska|webm/.test(formatName)) return ".mkv";
+  return ".video";
+}
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -83,6 +93,7 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
       formats: Object.entries(ASPECTS).map(([id, a]) => ({ id, ...a })),
       looks: Object.entries(LOOKS).map(([id, l]) => ({ id, name: l.name, description: l.description })),
       maxUploadMb: Math.round(cfg.maxUploadBytes / 1024 / 1024),
+      uploadChunkBytes: 8 * 1024 * 1024,
       // Report real availability, never pretend. The API key itself is never sent.
       ai: {
         transcription: pipeline.transcriptionAvailable
@@ -95,17 +106,87 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
   });
 
   // ---------- upload ----------
+  /** Validates by content (ffprobe), not by file name, then creates the project. */
+  async function createProjectFromFile(tmpFile: string, originalName: string, name?: string) {
+    try {
+      let info;
+      try {
+        info = await probe(cfg.ffprobePath, tmpFile);
+      } catch {
+        throw new HttpError(422, "This file isn't a video we can read. Please choose an MP4 or MOV video (iPhone videos are supported).");
+      }
+      if (info.durationSec > 30 * 60) throw new HttpError(422, "Videos longer than 30 minutes are not supported.");
+      const ext = storageExt(originalName, info.formatName);
+      const projectName = String(name || path.basename(originalName, path.extname(originalName)) || "Untitled").slice(0, 120);
+      const project = await store.create({ name: projectName, originalName, tmpFile, ext, info });
+      pipeline.startIngest(project);
+      return store.get(project.id)!;
+    } catch (e) {
+      await fsp.rm(tmpFile, { force: true });
+      throw e;
+    }
+  }
+
+  // Resumable chunked upload (used by the web app).
+  const uploads = new UploadManager(store.tmpDir, cfg.maxUploadBytes);
+  const uploadErr = (e: unknown) => {
+    if (e instanceof UploadError) return Object.assign(new HttpError(e.status, e.message), { received: e.received });
+    return e;
+  };
+
+  app.post("/api/uploads", async (req, res) => {
+    const body = z.object({ name: z.string().max(400).default("video"), size: z.number().int().positive() }).safeParse(req.body ?? {});
+    if (!body.success) throw new HttpError(400, "Invalid upload request");
+    try {
+      res.status(201).json(await uploads.create(body.data.name, body.data.size));
+    } catch (e) {
+      throw uploadErr(e);
+    }
+  });
+
+  app.get("/api/uploads/:id", (req, res) => {
+    try {
+      const u = uploads.get(String(req.params.id));
+      res.json({ id: u.id, received: u.received, size: u.size });
+    } catch (e) {
+      throw uploadErr(e);
+    }
+  });
+
+  app.put("/api/uploads/:id", express.raw({ type: () => true, limit: "16mb" }), async (req, res) => {
+    const offset = Number(req.query.offset);
+    if (!Number.isInteger(offset) || offset < 0) throw new HttpError(400, "Missing offset");
+    if (!Buffer.isBuffer(req.body) || !req.body.length) throw new HttpError(400, "Empty chunk");
+    try {
+      res.json(await uploads.writeChunk(String(req.params.id), offset, req.body));
+    } catch (e) {
+      throw uploadErr(e);
+    }
+  });
+
+  app.post("/api/uploads/:id/complete", async (req, res) => {
+    let done;
+    try {
+      done = uploads.finish(String(req.params.id));
+    } catch (e) {
+      throw uploadErr(e);
+    }
+    const project = await createProjectFromFile(done.file, done.name, typeof req.body?.name === "string" ? req.body.name : undefined);
+    res.status(201).json(publicProject(project));
+  });
+
+  app.delete("/api/uploads/:id", async (req, res) => {
+    await uploads.cancel(String(req.params.id));
+    res.status(204).end();
+  });
+
+  // Single-request multipart upload (simple clients, curl, tests).
   const upload = multer({
     storage: multer.diskStorage({
       destination: store.tmpDir,
-      filename: (_req, file, cb) => cb(null, `upload-${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname).toLowerCase()}`),
+      filename: (_req, _file, cb) => cb(null, `upload-${Date.now()}-${Math.random().toString(36).slice(2)}.part`),
     }),
     limits: { fileSize: cfg.maxUploadBytes, files: 1 },
-    fileFilter: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      if (!ALLOWED_EXT.has(ext)) return cb(new HttpError(415, "Only MP4 and MOV videos are supported."));
-      cb(null, true);
-    },
   });
 
   app.post("/api/projects", (req, res, next) => {
@@ -118,20 +199,9 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
       const file = req.file;
       if (!file) return next(new HttpError(400, 'No video received. Send the file in a "video" form field.'));
       try {
-        let info;
-        try {
-          info = await probe(cfg.ffprobePath, file.path);
-        } catch (e) {
-          throw new HttpError(422, e instanceof Error ? e.message : "Unreadable video");
-        }
-        if (info.durationSec > 30 * 60) throw new HttpError(422, "Videos longer than 30 minutes are not supported.");
-        const ext = path.extname(file.originalname).toLowerCase();
-        const name = String(req.body?.name || path.basename(file.originalname, ext)).slice(0, 120);
-        const project = await store.create({ name, originalName: file.originalname, tmpFile: file.path, ext, info });
-        pipeline.startIngest(project);
-        res.status(201).json(publicProject(store.get(project.id)!));
+        const project = await createProjectFromFile(file.path, file.originalname, req.body?.name);
+        res.status(201).json(publicProject(project));
       } catch (e) {
-        await fsp.rm(file.path, { force: true });
         next(e);
       }
     });
@@ -330,13 +400,18 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
   app.use("/api", (_req, _res, next) => next(new HttpError(404, "Not found")));
 
   // ---------- web client ----------
-  if (fs.existsSync(cfg.webDist)) {
+  if (fs.existsSync(path.join(cfg.webDist, "index.html"))) {
     app.use(express.static(cfg.webDist, { index: false, maxAge: "1d" }));
-    app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(cfg.webDist, "index.html")));
+    app.get(/^\/(?!api\/).*/, (_req, res) => res.set("Cache-Control", "no-cache").sendFile(path.join(cfg.webDist, "index.html")));
+  } else {
+    // Previously a bare "Cannot GET /": explain how to get the editor UI instead.
+    app.get(/^\/(?!api\/).*/, (_req, res) =>
+      res.status(503).type("html").send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="background:#0a0a0b;color:#f4f0e8;font:16px system-ui;padding:32px;line-height:1.6"><h2>The editor interface hasn't been built yet</h2><p>The server is running, but the web app files are missing. Stop the server and start it with:</p><pre style="background:#151517;padding:12px;border-radius:8px">npm start</pre><p>from the project folder (it builds the interface automatically).</p></body>`),
+    );
   }
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, received: (err as any).received });
     if (err instanceof FfmpegError) {
       console.error("[ffmpeg]", err.message, err.stderrTail);
       return res.status(500).json({ error: err.message, detail: err.stderrTail || undefined });

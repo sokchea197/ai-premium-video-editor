@@ -1,23 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../lib/api";
-import { formatTime, relativeDate } from "../lib/format";
+import { api, ApiError, type UploadProgress } from "../lib/api";
+import { formatBytes, formatTime, relativeDate } from "../lib/format";
 import type { Project } from "../lib/types";
 import { navigate } from "../App";
 import { Icon } from "./Icon";
 import { toast } from "./Toast";
 
-const ACCEPT = "video/mp4,video/quicktime,.mp4,.mov,.m4v";
-const OK_EXT = /\.(mp4|mov|m4v)$/i;
+// "video/*" makes iOS offer Photo Library, Take Video and Files. The server checks the
+// actual content with ffprobe, so files with odd names or no extension still work.
+const ACCEPT = "video/*,.mp4,.mov,.m4v";
+// Only reject the obviously wrong here; generic types like application/octet-stream
+// (common from Files/Drive) go to the server, which checks the real content.
+const looksLikeVideo = (f: File) => !/^(image|audio|text)\//.test(f.type) && f.type !== "application/pdf";
+
+function uploadLabel(u: { size: number; progress: UploadProgress | null; finishing: boolean }) {
+  if (u.finishing) return "Checking video…";
+  const p = u.progress;
+  if (!p) return "Starting upload…";
+  const pct = Math.floor((p.sent / Math.max(1, p.total)) * 100);
+  if (p.retrying) return `Connection lost, retrying · ${pct}%`;
+  const eta = p.rate > 0 ? Math.ceil((p.total - p.sent) / p.rate) : 0;
+  return `${pct}% · ${formatBytes(p.sent)} of ${formatBytes(p.total)}${eta ? ` · ${eta > 90 ? `${Math.ceil(eta / 60)} min` : `${eta} s`} left` : ""}`;
+}
 
 export function Library() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [upload, setUpload] = useState<{ name: string; progress: number; abort: () => void } | null>(null);
+  const [upload, setUpload] = useState<{ name: string; size: number; progress: UploadProgress | null; abort: () => void; finishing: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [serverDown, setServerDown] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    api.health().then(() => setServerDown(false), () => setServerDown(true));
+  }, []);
+
   const refresh = useCallback(() => {
-    api.projects().then(setProjects, (e) => setLoadError(e.message));
+    api.projects().then((p) => { setProjects(p); setLoadError(null); }, (e) => setLoadError(e.message));
   }, []);
   useEffect(refresh, [refresh]);
 
@@ -29,12 +48,14 @@ export function Library() {
   }, [projects, refresh]);
 
   const startUpload = (file: File) => {
-    if (!OK_EXT.test(file.name)) {
-      toast.error("Please choose an MP4 or MOV video.");
+    if (!looksLikeVideo(file)) {
+      toast.error(`“${file.name}” doesn't look like a video. Please choose an MP4 or MOV.`);
       return;
     }
-    const { promise, abort } = api.upload(file, (progress) => setUpload((u) => (u ? { ...u, progress } : u)));
-    setUpload({ name: file.name, progress: 0, abort });
+    const { promise, abort } = api.upload(file, (progress) =>
+      setUpload((u) => (u ? { ...u, progress, finishing: progress.sent >= progress.total } : u)),
+    );
+    setUpload({ name: file.name || "Video", size: file.size, progress: null, abort, finishing: false });
     promise
       .then((p) => {
         toast.success("Uploaded. Preparing your preview…");
@@ -81,41 +102,47 @@ export function Library() {
         <p className="hero__sub">Upload a clip, shape the frame and grade, and export a polished 1080p master for every platform.</p>
       </section>
 
-      <section
-        className={`dropzone ${dragging ? "is-dragging" : ""} ${upload ? "is-busy" : ""}`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-        onClick={() => !upload && inputRef.current?.click()}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && !upload && inputRef.current?.click()}
-      >
-        <input ref={inputRef} type="file" accept={ACCEPT} hidden onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
-          if (f) startUpload(f);
-        }} />
-        {upload ? (
-          <div className="dropzone__progress" onClick={(e) => e.stopPropagation()}>
+      {serverDown && (
+        <div className="notice notice--error server-down">
+          <strong>Can't reach the editor server.</strong> Start it on your computer with <code>npm start</code>, then open the address it prints (on iPhone, use the “On your iPhone” address while on the same Wi-Fi).
+          <button className="link" onClick={() => api.health().then(() => { setServerDown(false); refresh(); }, () => toast.error("Still can't reach the server."))}>Retry</button>
+        </div>
+      )}
+
+      {upload ? (
+        <section className="dropzone is-busy">
+          <div className="dropzone__progress">
             <p className="dropzone__file">{upload.name}</p>
-            <div className="bar"><div className="bar__fill" style={{ width: `${upload.progress * 100}%` }} /></div>
+            <div className="bar bar--gold"><div className="bar__fill" style={{ width: `${((upload.progress?.sent ?? 0) / Math.max(1, upload.size)) * 100}%` }} /></div>
             <div className="dropzone__row">
-              <span>{upload.progress < 1 ? `Uploading · ${Math.round(upload.progress * 100)}%` : "Analysing video…"}</span>
-              {upload.progress < 1 && <button className="link" onClick={upload.abort}>Cancel</button>}
+              <span>{uploadLabel(upload)}</span>
+              {!upload.finishing && <button className="link" onClick={upload.abort}>Cancel</button>}
             </div>
+            <p className="fineprint">Keep this page open until the upload finishes. If the connection drops, it resumes automatically.</p>
           </div>
-        ) : (
-          <>
-            <div className="dropzone__icon"><Icon name="upload" size={26} /></div>
-            <p className="dropzone__title">Upload footage</p>
-            <p className="dropzone__hint">Tap to choose, or drop an MP4 / MOV here</p>
-          </>
-        )}
-      </section>
+        </section>
+      ) : (
+        <label
+          className={`dropzone ${dragging ? "is-dragging" : ""}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+        >
+          {/* A real (visually hidden) input inside a <label>: the most reliable file picker on iOS Safari. */}
+          <input ref={inputRef} className="visually-hidden" type="file" accept={ACCEPT} onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) startUpload(f);
+          }} />
+          <div className="dropzone__icon"><Icon name="upload" size={26} /></div>
+          <p className="dropzone__title">Upload footage</p>
+          <p className="dropzone__hint">Tap to choose from Photos or Files, or drop a video here</p>
+          <p className="dropzone__formats">MP4 · MOV · iPhone HEVC &amp; HDR · up to 20 GB</p>
+        </label>
+      )}
 
       <section className="projects">
         <div className="section-head">

@@ -67,8 +67,8 @@ describe("upload → preview → edit → export", () => {
 
   it("rejects non-video uploads with clear errors", async () => {
     const txt = await request(ctx.app).post("/api/projects").attach("video", fx.text);
-    expect(txt.status).toBe(415);
-    expect(txt.body.error).toMatch(/MP4 and MOV/);
+    expect(txt.status).toBe(422);
+    expect(txt.body.error).toMatch(/isn't a video/);
     const fake = await request(ctx.app).post("/api/projects").attach("video", fx.fake);
     expect(fake.status).toBe(422);
     const none = await request(ctx.app).post("/api/projects");

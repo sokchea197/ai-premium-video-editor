@@ -109,7 +109,12 @@ p { margin: 0; }
 .dropzone.is-busy { cursor: default; border-style: solid; }
 .dropzone__icon { width: 58px; height: 58px; margin: 0 auto 14px; border-radius: 50%; display: grid; place-items: center; color: var(--gold); border: 1px solid rgba(201,169,110,.35); }
 .dropzone__title { font-family: var(--serif); font-size: 26px; }
+.dropzone { display: block; position: relative; }
 .dropzone__hint { color: var(--muted); margin-top: 4px; }
+.dropzone__formats { color: var(--muted); font-size: 11.5px; letter-spacing: 0.04em; margin-top: 14px; opacity: 0.8; }
+.dropzone:focus-within { border-color: var(--gold); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.server-down { margin: 0 20px 18px; display: grid; gap: 6px; }
 .dropzone__progress { max-width: 420px; margin: 0 auto; display: grid; gap: 12px; text-align: left; }
 .dropzone__file { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dropzone__row { display: flex; justify-content: space-between; color: var(--text-2); font-size: 13px; }

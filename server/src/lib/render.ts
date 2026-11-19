@@ -11,8 +11,9 @@ export interface RenderEnv {
 const HDR_TO_SDR =
   "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv";
 
+/** Reels/TikTok play at 30 fps: cap there (halves encode time for iPhone 60 fps footage). */
 function outputFps(info: MediaInfo) {
-  const fps = info.fps > 0 && info.fps <= 60 ? info.fps : 30;
+  const fps = info.fps > 0 && info.fps <= 30.5 ? info.fps : 30;
   return Math.round(fps * 1000) / 1000;
 }
 
@@ -49,6 +50,9 @@ export function buildVideoGraph(
   const { outputLength } = segment(edit, info.durationSec);
   const fps = outputFps(info);
   const pre: string[] = [];
+  // Shrink to just cover the output frame FIRST. iPhone footage is often 4K/60 HDR:
+  // tone-mapping or interpolating at 4K is ~6x slower and gains nothing at 1080p.
+  pre.push(`scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos`);
   if (info.isHdr && env.zscale) pre.push(HDR_TO_SDR);
   pre.push("format=yuv420p");
 
@@ -130,12 +134,12 @@ export function buildStillArgs(src: string, out: string, timeSec: number, edit: 
 
 /** Browser-friendly preview proxy: H.264, long side ≤ 1280, SDR. */
 export function buildProxyArgs(src: string, out: string, info: MediaInfo, env: RenderEnv) {
+  // Downscale and cap at 30 fps before any colour conversion (6x faster on iPhone 4K HDR).
   const vf: string[] = [];
+  if (info.fps > 31) vf.push("fps=30");
+  vf.push("scale='if(gte(iw,ih),min(1280,iw),-2)':'if(gte(iw,ih),-2,min(1280,ih))':flags=bilinear");
   if (info.isHdr && env.zscale) vf.push(HDR_TO_SDR);
-  vf.push(
-    "scale='if(gte(iw,ih),min(1280,iw),-2)':'if(gte(iw,ih),-2,min(1280,ih))'",
-    "format=yuv420p",
-  );
+  vf.push("format=yuv420p");
   const args = ["-i", src, "-vf", vf.join(","), "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-g", "30"];
   if (info.hasAudio) args.push("-c:a", "aac", "-b:a", "128k", "-ac", "2");
   else args.push("-an");
