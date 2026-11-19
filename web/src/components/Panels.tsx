@@ -123,28 +123,3 @@ export function AudioPanel({ edit, set, project }: { edit: EditSettings; set: Se
     </div>
   );
 }
-
-export function AiPanel({ health }: { health: Health | null }) {
-  const rows = [
-    { key: "transcription", title: "Auto subtitles", body: "Transcribe speech into synchronised, editable, animated captions." },
-    { key: "editingAssistant", title: "AI director", body: "Find key moments, suggest cuts and story structure, and apply edits from a prompt." },
-  ];
-  return (
-    <div className="panel">
-      <h4 className="panel__title">AI features</h4>
-      {rows.map((r) => {
-        const s = health?.ai[r.key];
-        return (
-          <div key={r.key} className="ai-row">
-            <div>
-              <p className="ai-row__title">{r.title}</p>
-              <p className="muted">{r.body}</p>
-            </div>
-            <span className={`pill ${s?.available ? "pill--gold" : "pill--muted"}`}>{s?.available ? "Ready" : "Not yet available"}</span>
-          </div>
-        );
-      })}
-      <p className="fineprint">These arrive in the next build stages. Nothing here is simulated: a feature shows as ready only when the server can actually run it.</p>
-    </div>
-  );
-}

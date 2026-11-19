@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
 import { probe, runFfmpeg, FfmpegError } from "./ffmpeg.js";
 import type { JobManager } from "./jobs.js";
-import { buildExportArgs, buildFilmstripArgs, buildProxyArgs, buildStillArgs, type RenderEnv } from "./render.js";
+import { buildExportArgs, buildFilmstripArgs, buildProxyArgs, buildStillArgs, stillTime, type CaptionBurnIn, type RenderEnv } from "./render.js";
+import { buildAss, defaultCaptionStyle, groupWords, type Captions } from "./captions.js";
+import { transcribeWithDeepgram, TranscriptionError } from "./deepgram.js";
+import { ASPECTS, segment } from "./edit.js";
 import type { ExportRecord, Project, ProjectStore } from "./store.js";
 
 export class Pipeline {
@@ -62,11 +65,20 @@ export class Pipeline {
     const exportId = randomUUID();
     const fileName = `export-${exportId}.mp4`;
     const tmpOut = this.store.file(id, `${fileName}.part.mp4`);
+    const captions = project.captions ? structuredClone(project.captions) : null;
+    const burn = this.captionBurnIn(id, `export-${exportId}.ass`, captions);
     // Validate eagerly so a bad trim is reported immediately, not as a failed job.
-    const plan = buildExportArgs(src, tmpOut, edit, info, this.env);
+    const plan = buildExportArgs(src, tmpOut, edit, info, this.env, burn ?? undefined);
 
     const job = this.jobs.enqueue("export", id, async (ctx) => {
       ctx.progress(0, "Rendering 1080p master");
+      if (burn && captions) {
+        const seg = segment(edit, info.durationSec);
+        await fs.writeFile(burn.assPath, buildAss(captions, {
+          width: plan.width, height: plan.height, outDuration: plan.outputLength,
+          map: (t) => (t - seg.start) / edit.speed,
+        }));
+      }
       await this.store.update(id, (p) => {
         const r = p.exports.find((e) => e.id === exportId);
         if (r) r.status = "rendering";
@@ -80,6 +92,8 @@ export class Pipeline {
       } catch (e) {
         await fs.rm(tmpOut, { force: true });
         throw e;
+      } finally {
+        if (burn) await fs.rm(burn.assPath, { force: true });
       }
       ctx.progress(0.98, "Verifying output");
       // Never report success without checking the file is a valid video of the right shape.
@@ -126,12 +140,90 @@ export class Pipeline {
 
   async renderStill(project: Project, timeSec: number): Promise<Buffer> {
     const src = this.store.file(project.id, project.source.fileName);
-    const out = `${this.store.tmpDir}/still-${randomUUID()}.jpg`;
+    const key = randomUUID();
+    const out = `${this.store.tmpDir}/still-${key}.jpg`;
+    const burn = this.captionBurnIn(project.id, `still-${key}.ass`, project.captions);
     try {
-      await runFfmpeg(this.cfg.ffmpegPath, buildStillArgs(src, out, timeSec, project.edit, project.source.info, this.env));
+      if (burn && project.captions) {
+        const t = stillTime(timeSec, project.source.info);
+        const { width, height } = ASPECTS[project.edit.aspect];
+        // Input-seeked frame has pts 0 at source time t.
+        await fs.writeFile(burn.assPath, buildAss(project.captions, { width, height, outDuration: 1, map: (x) => x - t, still: true }));
+      }
+      await runFfmpeg(this.cfg.ffmpegPath, buildStillArgs(src, out, timeSec, project.edit, project.source.info, this.env, burn ?? undefined));
       return await fs.readFile(out);
     } finally {
       await fs.rm(out, { force: true });
+      if (burn) await fs.rm(burn.assPath, { force: true });
     }
+  }
+
+  private captionBurnIn(projectId: string, name: string, captions: Captions | null): CaptionBurnIn | null {
+    if (!captions?.style.enabled || !captions.segments.length) return null;
+    return { assPath: this.store.file(projectId, name), fontsDir: this.cfg.fontsDir };
+  }
+
+  get transcriptionAvailable() {
+    return Boolean(this.cfg.deepgramApiKey);
+  }
+
+  /** Extracts speech audio and transcribes it with Deepgram, then builds captions. */
+  startTranscribe(project: Project, opts: { language: string; keyterms: string[] }) {
+    const apiKey = this.cfg.deepgramApiKey;
+    if (!apiKey) throw new TranscriptionError("Transcription is not configured: the server has no DEEPGRAM_API_KEY.", 503);
+    const id = project.id;
+    const job = this.jobs.enqueue("transcribe", id, async (ctx) => {
+      const p = this.store.get(id);
+      if (!p) throw new Error("Project was deleted");
+      const src = this.store.file(id, p.source.fileName);
+      const audioPath = this.store.file(id, `speech-${job.id}.ogg`);
+      try {
+        ctx.progress(0.02, "Extracting speech audio");
+        // Mono 16 kHz Opus: compact upload, ample quality for speech recognition.
+        await runFfmpeg(this.cfg.ffmpegPath, [
+          "-i", src, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "32k", "-application", "voip", audioPath,
+        ], { durationSec: p.source.info.durationSec, signal: ctx.signal, onProgress: (f) => ctx.progress(0.02 + f * 0.2) });
+        const audio = await fs.readFile(audioPath);
+
+        ctx.progress(0.25, "Transcribing with Deepgram");
+        // Deepgram gives no progress; ease the bar forward so the UI shows life, capped well below done.
+        const started = Date.now();
+        const expected = 4000 + p.source.info.durationSec * 120;
+        const ticker = setInterval(() => {
+          const f = 1 - Math.exp(-(Date.now() - started) / expected);
+          ctx.progress(0.25 + f * 0.6);
+        }, 400);
+        let transcript;
+        try {
+          transcript = await transcribeWithDeepgram(audio, "audio/ogg", {
+            apiKey, baseUrl: this.cfg.deepgramBaseUrl, model: this.cfg.deepgramModel,
+            language: opts.language, keyterms: opts.keyterms, signal: ctx.signal,
+          });
+        } finally {
+          clearInterval(ticker);
+        }
+
+        ctx.progress(0.92, transcript.words.length ? "Building synchronised captions" : "No speech detected");
+        await this.store.update(id, (proj) => {
+          const style = proj.captions?.style ?? defaultCaptionStyle();
+          proj.transcript = transcript;
+          proj.captions = { style, segments: groupWords(transcript.words, style.chunking), edited: false };
+        });
+      } finally {
+        await fs.rm(audioPath, { force: true });
+      }
+    });
+    void this.store.update(id, (p) => {
+      p.transcription = { status: "running", jobId: job.id, language: opts.language };
+    });
+    void this.jobs.wait(job.id).then((j) =>
+      this.store.update(id, (p) => {
+        p.transcription =
+          j.status === "done"
+            ? { status: "idle", language: opts.language }
+            : { status: "failed", jobId: j.id, error: j.status === "cancelled" ? "Transcription was cancelled." : j.error ?? "Transcription failed", language: opts.language };
+      }),
+    );
+    return job;
   }
 }

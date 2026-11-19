@@ -5,7 +5,7 @@ export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export interface Job {
   id: string;
-  kind: "ingest" | "export";
+  kind: "ingest" | "export" | "transcribe";
   projectId: string;
   status: JobStatus;
   /** 0..1 */

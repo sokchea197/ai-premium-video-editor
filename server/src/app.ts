@@ -11,6 +11,9 @@ import { JobManager } from "./lib/jobs.js";
 import { LOOKS } from "./lib/looks.js";
 import { Pipeline } from "./lib/pipeline.js";
 import { ProjectStore, type Project } from "./lib/store.js";
+import { CHUNKING, PRESETS, captionStyleSchema, groupWords, validateSegments } from "./lib/captions.js";
+import { TranscriptionError } from "./lib/deepgram.js";
+import { timingSafeEqual } from "node:crypto";
 
 const ALLOWED_EXT = new Set([".mp4", ".mov", ".m4v"]);
 
@@ -33,7 +36,20 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
 
   const app = express();
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({ limit: "4mb" }));
+
+  // Optional shared password for the whole app. Strongly recommended whenever the
+  // server is reachable from the internet, since transcription spends Deepgram credit.
+  if (cfg.appPassword) {
+    const expected = Buffer.from(cfg.appPassword);
+    app.use((req, res, next) => {
+      const m = /^Basic (.+)$/.exec(req.headers.authorization ?? "");
+      const pass = m ? Buffer.from(m[1], "base64").toString().split(":").slice(1).join(":") : "";
+      const given = Buffer.from(pass);
+      if (given.length === expected.length && timingSafeEqual(given, expected)) return next();
+      res.set("WWW-Authenticate", 'Basic realm="Premium Studio", charset="UTF-8"').status(401).json({ error: "Sign in required" });
+    });
+  }
 
   const mustProject = (req: Request): Project => {
     let p: Project | undefined;
@@ -67,11 +83,14 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
       formats: Object.entries(ASPECTS).map(([id, a]) => ({ id, ...a })),
       looks: Object.entries(LOOKS).map(([id, l]) => ({ id, name: l.name, description: l.description })),
       maxUploadMb: Math.round(cfg.maxUploadBytes / 1024 / 1024),
-      // AI features are added in later stages; report their real state, never pretend.
+      // Report real availability, never pretend. The API key itself is never sent.
       ai: {
-        transcription: { available: false, reason: "Not yet implemented (stage 2)" },
+        transcription: pipeline.transcriptionAvailable
+          ? { available: true, provider: "deepgram", model: cfg.deepgramModel, pricePerMinuteUsd: { standard: 0.0043, multilingual: 0.0052, keytermAddOn: 0.0013 } }
+          : { available: false, provider: "deepgram", reason: "The server has no DEEPGRAM_API_KEY configured." },
         editingAssistant: { available: false, reason: "Not yet implemented (stage 3)" },
       },
+      captionPresets: Object.entries(PRESETS).map(([id, p]) => ({ id, ...p })),
     });
   });
 
@@ -125,7 +144,11 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
   app.patch("/api/projects/:id", async (req, res) => {
     const p = mustProject(req);
     const body = z
-      .strictObject({ name: z.string().trim().min(1).max(120).optional(), edit: z.record(z.string(), z.unknown()).optional() })
+      .strictObject({
+        name: z.string().trim().min(1).max(120).optional(),
+        edit: z.record(z.string(), z.unknown()).optional(),
+        captions: z.strictObject({ style: z.record(z.string(), z.unknown()).optional(), segments: z.array(z.unknown()).optional() }).optional(),
+      })
       .safeParse(req.body);
     const describe = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
     if (!body.success) throw new HttpError(400, `Invalid request: ${describe(body.error)}`);
@@ -138,9 +161,25 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
     } catch (e) {
       throw new HttpError(400, (e as Error).message);
     }
+    let nextCaptions = p.captions;
+    if (body.data.captions) {
+      if (!p.captions) throw new HttpError(409, "This project has no captions yet. Generate subtitles first.");
+      const style = captionStyleSchema.strict().safeParse({ ...p.captions.style, ...(body.data.captions.style ?? {}) });
+      if (!style.success) throw new HttpError(400, `Invalid caption style: ${describe(style.error)}`);
+      let segments = p.captions.segments;
+      if (body.data.captions.segments) {
+        try {
+          segments = validateSegments(body.data.captions.segments, p.source.info.durationSec);
+        } catch (e) {
+          throw new HttpError(400, e instanceof z.ZodError ? `Invalid captions: ${describe(e)}` : (e as Error).message);
+        }
+      }
+      nextCaptions = { style: style.data, segments, edited: p.captions.edited || Boolean(body.data.captions.segments) };
+    }
     const updated = await store.update(p.id, (proj) => {
       if (body.data.name) proj.name = body.data.name;
       proj.edit = nextEdit;
+      proj.captions = nextCaptions;
     });
     res.json(publicProject(updated!));
   });
@@ -158,6 +197,49 @@ export async function createApp(overrides: Partial<AppConfig> = {}) {
     if (p.media.status === "processing") throw new HttpError(409, "Already processing");
     const job = pipeline.startIngest(p);
     res.status(202).json({ job });
+  });
+
+  // ---------- transcription & captions ----------
+  app.post("/api/projects/:id/transcribe", (req, res) => {
+    const p = mustProject(req);
+    const body = z
+      .strictObject({
+        language: z.string().regex(/^(auto|multi|[a-z]{2,3}(-[A-Za-z0-9]{2,8})?)$/).default("auto"),
+        keyterms: z.array(z.string().trim().min(1).max(50)).max(20).default([]),
+      })
+      .safeParse(req.body ?? {});
+    if (!body.success) throw new HttpError(400, "Invalid transcription options");
+    if (!pipeline.transcriptionAvailable) throw new HttpError(503, "Transcription is not configured: the server has no DEEPGRAM_API_KEY.");
+    if (p.media.status !== "ready") throw new HttpError(409, "Wait until the footage has finished preparing.");
+    if (!p.source.info.hasAudio) throw new HttpError(422, "This video has no audio track to transcribe.");
+    if (p.transcription.status === "running") throw new HttpError(409, "Transcription is already running.");
+    let job;
+    try {
+      job = pipeline.startTranscribe(p, { language: body.data.language, keyterms: body.data.keyterms.filter(Boolean) });
+    } catch (e) {
+      if (e instanceof TranscriptionError) throw new HttpError(e.status ?? 500, e.message);
+      throw e;
+    }
+    res.status(202).json({ job });
+  });
+
+  app.post("/api/projects/:id/captions/regroup", async (req, res) => {
+    const p = mustProject(req);
+    const body = z.strictObject({ chunking: z.enum(CHUNKING) }).safeParse(req.body ?? {});
+    if (!body.success) throw new HttpError(400, "Invalid caption length");
+    if (!p.transcript || !p.captions) throw new HttpError(409, "Generate subtitles first.");
+    const updated = await store.update(p.id, (proj) => {
+      const style = { ...proj.captions!.style, chunking: body.data.chunking };
+      proj.captions = { style, segments: groupWords(proj.transcript!.words, body.data.chunking), edited: false };
+    });
+    res.json(publicProject(updated!));
+  });
+
+  // Bundled OFL fonts, so the browser preview uses the exact typefaces burned into exports.
+  app.get("/api/fonts/:file", (req, res, next) => {
+    const f = path.basename(String(req.params.file));
+    if (!/^[\w-]+\.ttf$/.test(f)) throw new HttpError(404, "Not found");
+    res.sendFile(path.join(cfg.fontsDir, f), { maxAge: "30d", headers: { "Access-Control-Allow-Origin": "*" } }, (err) => err && next(new HttpError(404, "Not found")));
   });
 
   // ---------- media ----------

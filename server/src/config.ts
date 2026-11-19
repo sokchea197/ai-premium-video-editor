@@ -11,6 +11,13 @@ export interface AppConfig {
   ffmpegPath: string;
   ffprobePath: string;
   x264Preset: string;
+  fontsDir: string;
+  /** Server-side only. Never sent to the browser. */
+  deepgramApiKey: string | null;
+  deepgramBaseUrl: string;
+  deepgramModel: string;
+  /** Optional shared password protecting the whole app (HTTP Basic auth). */
+  appPassword: string | null;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -22,6 +29,11 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ffmpegPath: process.env.FFMPEG_PATH ?? "ffmpeg",
     ffprobePath: process.env.FFPROBE_PATH ?? "ffprobe",
     x264Preset: process.env.X264_PRESET ?? "medium",
+    fontsDir: path.join(root, "server", "assets", "fonts"),
+    deepgramApiKey: process.env.DEEPGRAM_API_KEY?.trim() || null,
+    deepgramBaseUrl: process.env.DEEPGRAM_BASE_URL ?? "https://api.deepgram.com",
+    deepgramModel: process.env.DEEPGRAM_MODEL ?? "nova-3",
+    appPassword: process.env.APP_PASSWORD?.trim() || null,
     ...overrides,
   };
 }

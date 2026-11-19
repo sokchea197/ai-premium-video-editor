@@ -4,6 +4,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { defaultEdit, editSchema, type EditSettings } from "./edit.js";
 import type { MediaInfo } from "./ffmpeg.js";
+import type { Transcript } from "./deepgram.js";
+import { captionStyleSchema, type Captions } from "./captions.js";
 
 export type MediaStatus = "processing" | "ready" | "failed";
 export type ExportStatus = "queued" | "rendering" | "done" | "failed" | "cancelled";
@@ -32,6 +34,9 @@ export interface Project {
   media: { status: MediaStatus; jobId?: string; error?: string; hasProxy: boolean; hasThumb: boolean; hasFilmstrip: boolean };
   edit: EditSettings;
   exports: ExportRecord[];
+  transcript: Transcript | null;
+  captions: Captions | null;
+  transcription: { status: "idle" | "running" | "failed"; jobId?: string; error?: string; language?: string };
 }
 
 /**
@@ -64,6 +69,10 @@ export class ProjectStore {
       try {
         const p = JSON.parse(await fs.readFile(path.join(this.root, "projects", id, "project.json"), "utf8")) as Project;
         p.edit = editSchema.parse(p.edit ?? {});
+        p.transcript ??= null;
+        p.captions ??= null;
+        if (p.captions) p.captions.style = captionStyleSchema.parse(p.captions.style ?? {});
+        p.transcription ??= { status: "idle" };
         this.cache.set(p.id, p);
       } catch {
         // skip unreadable/incomplete project directories
@@ -74,6 +83,10 @@ export class ProjectStore {
       let changed = false;
       if (p.media.status === "processing") {
         p.media = { ...p.media, status: "failed", error: "Processing was interrupted by a server restart. Retry to continue." };
+        changed = true;
+      }
+      if (p.transcription.status === "running") {
+        p.transcription = { status: "failed", error: "Transcription was interrupted by a server restart. Try again." };
         changed = true;
       }
       for (const e of p.exports) {
@@ -114,6 +127,9 @@ export class ProjectStore {
       media: { status: "processing", hasProxy: false, hasThumb: false, hasFilmstrip: false },
       edit,
       exports: [],
+      transcript: null,
+      captions: null,
+      transcription: { status: "idle" },
     };
     this.cache.set(id, p);
     await this.save(p);

@@ -46,6 +46,45 @@ export interface ExportRecord {
   downloadUrl: string | null;
 }
 
+export type PresetId = "bold-pop" | "editorial" | "minimal" | "impact";
+export type Chunking = "punchy" | "balanced" | "lines";
+
+export interface CaptionWord { text: string; start: number; end: number }
+export interface CaptionSegment { id: string; start: number; end: number; words: CaptionWord[] }
+export interface CaptionStyle {
+  enabled: boolean;
+  preset: PresetId;
+  position: "lower" | "middle" | "upper";
+  size: number;
+  highlight: string;
+  animate: boolean;
+  chunking: Chunking;
+}
+export interface Captions { style: CaptionStyle; segments: CaptionSegment[]; edited: boolean }
+export interface Transcript { provider: string; model: string; language: string | null; audioDurationSec: number; createdAt: string; words: { text: string }[] }
+
+export interface PresetDef {
+  id: PresetId;
+  name: string;
+  description: string;
+  cssFamily: string;
+  cssWeight: number;
+  emRatio: number;
+  size: number;
+  uppercase: boolean;
+  color: string;
+  outline: number;
+  outlineColor: string;
+  outlineAlpha: number;
+  shadow: number;
+  shadowAlpha: number;
+  box: boolean;
+  boxAlpha: number;
+  letterSpacing: number;
+  activeItalic: boolean;
+  activeScale: number;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -55,12 +94,15 @@ export interface Project {
   media: { status: "processing" | "ready" | "failed"; jobId?: string; error?: string };
   edit: EditSettings;
   exports: ExportRecord[];
+  transcript: Transcript | null;
+  captions: Captions | null;
+  transcription: { status: "idle" | "running" | "failed"; jobId?: string; error?: string; language?: string };
   urls: { proxy: string | null; thumb: string | null; filmstrip: string | null };
 }
 
 export interface Job {
   id: string;
-  kind: "ingest" | "export";
+  kind: "ingest" | "export" | "transcribe";
   status: "queued" | "running" | "done" | "failed" | "cancelled";
   progress: number;
   stage: string;
@@ -73,5 +115,9 @@ export interface Health {
   formats: { id: Aspect; width: number; height: number; label: string }[];
   looks: { id: LookId; name: string; description: string }[];
   maxUploadMb: number;
-  ai: Record<string, { available: boolean; reason?: string }>;
+  ai: {
+    transcription: { available: boolean; reason?: string; model?: string; pricePerMinuteUsd?: { standard: number; multilingual: number; keytermAddOn: number } };
+    editingAssistant: { available: boolean; reason?: string };
+  };
+  captionPresets: PresetDef[];
 }

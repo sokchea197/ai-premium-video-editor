@@ -1,6 +1,7 @@
 import { ASPECTS, segment, type EditSettings } from "./edit.js";
 import type { MediaInfo } from "./ffmpeg.js";
 import { lookFilters } from "./looks.js";
+import { escapeFilterPath } from "./captions.js";
 
 export interface RenderEnv {
   zscale: boolean;
@@ -29,7 +30,21 @@ function atempoChain(speed: number): string[] {
  * Builds the video filter graph, from input [0:v] to output [vout].
  * Shared by export and single-frame preview so the preview is exact.
  */
-export function buildVideoGraph(edit: EditSettings, info: MediaInfo, env: RenderEnv, opts: { forStill?: boolean } = {}) {
+export interface CaptionBurnIn {
+  assPath: string;
+  fontsDir: string;
+}
+
+export function captionFilter(c: CaptionBurnIn) {
+  return `ass=filename=${escapeFilterPath(c.assPath)}:fontsdir=${escapeFilterPath(c.fontsDir)}`;
+}
+
+export function buildVideoGraph(
+  edit: EditSettings,
+  info: MediaInfo,
+  env: RenderEnv,
+  opts: { forStill?: boolean; captions?: CaptionBurnIn } = {},
+) {
   const { width: W, height: H } = ASPECTS[edit.aspect];
   const { outputLength } = segment(edit, info.durationSec);
   const fps = outputFps(info);
@@ -49,6 +64,8 @@ export function buildVideoGraph(edit: EditSettings, info: MediaInfo, env: Render
   const fill = `scale=${W}:${H}:force_original_aspect_ratio=increase:flags=lanczos,crop=${W}:${H}:${cropX}:${cropY}`;
 
   const post = [...lookFilters(edit.look, edit.lookIntensity, edit.vignette)];
+  // Captions after the grade (so type isn't tinted) and before fades (so they fade with the picture).
+  if (opts.captions) post.push(captionFilter(opts.captions));
   if (!opts.forStill) {
     if (edit.fadeIn > 0) post.push(`fade=t=in:st=0:d=${edit.fadeIn}`);
     if (edit.fadeOut > 0) post.push(`fade=t=out:st=${Math.max(0, outputLength - edit.fadeOut).toFixed(3)}:d=${edit.fadeOut}`);
@@ -81,9 +98,9 @@ export function buildAudioGraph(edit: EditSettings, info: MediaInfo): string | n
   return `[0:a:0]${chain.join(",")}[aout]`;
 }
 
-export function buildExportArgs(src: string, out: string, edit: EditSettings, info: MediaInfo, env: RenderEnv) {
+export function buildExportArgs(src: string, out: string, edit: EditSettings, info: MediaInfo, env: RenderEnv, captions?: CaptionBurnIn) {
   const seg = segment(edit, info.durationSec);
-  const video = buildVideoGraph(edit, info, env);
+  const video = buildVideoGraph(edit, info, env, { captions });
   const audio = buildAudioGraph(edit, info);
   const args = [
     "-ss", seg.start.toFixed(3), "-t", seg.sourceLength.toFixed(3), "-i", src,
@@ -101,9 +118,13 @@ export function buildExportArgs(src: string, out: string, edit: EditSettings, in
   return { args, outputLength: seg.outputLength, width: video.width, height: video.height };
 }
 
-export function buildStillArgs(src: string, out: string, timeSec: number, edit: EditSettings, info: MediaInfo, env: RenderEnv) {
-  const t = Math.max(0, Math.min(timeSec, info.durationSec - 0.05));
-  const video = buildVideoGraph(edit, info, env, { forStill: true });
+export function stillTime(timeSec: number, info: MediaInfo) {
+  return Math.max(0, Math.min(timeSec, info.durationSec - 0.05));
+}
+
+export function buildStillArgs(src: string, out: string, timeSec: number, edit: EditSettings, info: MediaInfo, env: RenderEnv, captions?: CaptionBurnIn) {
+  const t = stillTime(timeSec, info);
+  const video = buildVideoGraph(edit, info, env, { forStill: true, captions });
   return ["-ss", t.toFixed(3), "-i", src, "-filter_complex", video.graph, "-map", "[vout]", "-frames:v", "1", "-q:v", "3", out];
 }
 

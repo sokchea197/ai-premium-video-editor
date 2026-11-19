@@ -1,0 +1,6 @@
+/* Bundled OFL caption typefaces (served by the API) — identical to those burned into exports. */
+@font-face { font-family: "Poppins"; font-weight: 600; font-display: swap; src: url("/api/fonts/Poppins-SemiBold.ttf") format("truetype"); }
+@font-face { font-family: "Poppins"; font-weight: 800; font-display: swap; src: url("/api/fonts/Poppins-ExtraBold.ttf") format("truetype"); }
+@font-face { font-family: "Anton"; font-weight: 400; font-display: swap; src: url("/api/fonts/Anton-Regular.ttf") format("truetype"); }
+@font-face { font-family: "DM Serif Display"; font-weight: 400; font-style: normal; font-display: swap; src: url("/api/fonts/DMSerifDisplay-Regular.ttf") format("truetype"); }
+@font-face { font-family: "DM Serif Display"; font-weight: 400; font-style: italic; font-display: swap; src: url("/api/fonts/DMSerifDisplay-Italic.ttf") format("truetype"); }

@@ -1,4 +1,10 @@
-import type { Health, Job, Project, EditSettings, ExportRecord } from "./types";
+import type { Health, Job, Project, EditSettings, ExportRecord, CaptionStyle, CaptionSegment, Chunking } from "./types";
+
+export interface ProjectPatch {
+  name?: string;
+  edit?: Partial<EditSettings>;
+  captions?: { style?: Partial<CaptionStyle>; segments?: CaptionSegment[] };
+}
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly detail?: string) {
@@ -23,9 +29,13 @@ export const api = {
   health: () => req<Health>("/api/health"),
   projects: () => req<Project[]>("/api/projects"),
   project: (id: string) => req<Project>(`/api/projects/${id}`),
-  updateProject: (id: string, patch: { name?: string; edit?: Partial<EditSettings> }) =>
+  updateProject: (id: string, patch: ProjectPatch) =>
     req<Project>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteProject: (id: string) => req<void>(`/api/projects/${id}`, { method: "DELETE" }),
+  transcribe: (id: string, opts: { language: string; keyterms: string[] }) =>
+    req<{ job: Job }>(`/api/projects/${id}/transcribe`, { method: "POST", body: JSON.stringify(opts) }),
+  regroupCaptions: (id: string, chunking: Chunking) =>
+    req<Project>(`/api/projects/${id}/captions/regroup`, { method: "POST", body: JSON.stringify({ chunking }) }),
   reprocess: (id: string) => req<{ job: Job }>(`/api/projects/${id}/reprocess`, { method: "POST" }),
   startExport: (id: string) => req<{ job: Job; export: ExportRecord }>(`/api/projects/${id}/exports`, { method: "POST" }),
   deleteExport: (id: string, exportId: string) => req<void>(`/api/projects/${id}/exports/${exportId}`, { method: "DELETE" }),

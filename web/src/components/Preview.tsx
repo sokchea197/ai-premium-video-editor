@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { lookCss } from "../lib/looks";
-import type { EditSettings, Project } from "../lib/types";
+import type { EditSettings, PresetDef, Project, Captions } from "../lib/types";
+import { CaptionOverlay } from "./CaptionOverlay";
 
 const RATIO: Record<EditSettings["aspect"], number> = { "9:16": 9 / 16, "1:1": 1, "16:9": 16 / 9 };
 
@@ -11,10 +12,13 @@ interface Props {
   trueFrame: { url: string | null; loading: boolean; error: string | null };
   onTogglePlay: () => void;
   playing: boolean;
+  captions: Captions | null;
+  presets: PresetDef[];
+  time: number;
 }
 
 /** Live, CSS-approximated preview of the edit inside the target frame. */
-export function Preview({ project, edit, videoRef, trueFrame, onTogglePlay, playing }: Props) {
+export function Preview({ project, edit, videoRef, trueFrame, onTogglePlay, playing, captions, presets, time }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -83,6 +87,10 @@ export function Preview({ project, edit, videoRef, trueFrame, onTogglePlay, play
           }}
         />
         {edit.vignette && <div className="frame__vignette" />}
+        {captions && !trueFrame.url && (
+          <CaptionOverlay captions={captions} preset={presets.find((p) => p.id === captions.style.preset)} aspect={edit.aspect}
+            frameWidth={size.w} time={time} trimStart={edit.trimStart} trimEnd={edit.trimEnd ?? project.source.info.durationSec} />
+        )}
         {trueFrame.url && <img className="frame__true" src={trueFrame.url} alt="Exact rendered frame" />}
         {trueFrame.url && <span className="frame__badge">Exact render</span>}
         {trueFrame.loading && <span className="frame__badge">Rendering frame…</span>}

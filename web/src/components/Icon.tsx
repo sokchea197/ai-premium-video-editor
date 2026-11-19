@@ -13,6 +13,7 @@ const paths: Record<string, string> = {
   speed: "M12 20a8 8 0 118-8M12 12l4-4",
   wave: "M3 12h2m2-4v8m3-11v14m3-10v6m3-8v10m3-6v2",
   export: "M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M5 12v7.5h14V12",
+  captions: "M3.5 6.5h17v11h-17zM7 11h3.5M12.5 11H17M7 14h6M15 14h2",
   retry: "M4 12a8 8 0 0113.7-5.7L20 8.5M20 4v4.5h-4.5M20 12a8 8 0 01-13.7 5.7L4 15.5M4 20v-4.5h4.5",
 };
 
