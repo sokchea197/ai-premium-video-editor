@@ -15,6 +15,10 @@ createApp()
   .then(({ app, caps, cfg }) => {
     const server = app.listen(port, host, () => {
       console.log(`\n  Premium Studio is running.\n`);
+      if (process.env.CODESPACE_NAME) {
+        const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN ?? "app.github.dev";
+        console.log(`  Open on your iPhone: https://${process.env.CODESPACE_NAME}-${port}.${domain}`);
+      }
       console.log(`  On this computer:  http://localhost:${port}`);
       // Phones on the same Wi-Fi reach the editor via this computer's LAN address.
       const lan = Object.values(os.networkInterfaces()).flat().filter((a) => a && a.family === "IPv4" && !a.internal);

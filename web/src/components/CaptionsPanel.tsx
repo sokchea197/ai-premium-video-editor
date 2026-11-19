@@ -82,7 +82,7 @@ function GenerateForm({ project, health, onTranscribe, captions }: Props) {
         <span>Cost</span>
         <strong>Free</strong>
         <small className="muted">
-          Open-source Whisper runs on your own computer. Nothing leaves it and there's no account.
+          Open-source Whisper runs on the editor's own server, with no paid service and no account.
           {chosen && <> First use downloads the {chosen.label.toLowerCase()} model once ({chosen.sizeMb} MB).</>}
           {minutes > 0.5 && <> Expect roughly {Math.max(1, Math.round(minutes * (model === "small" ? 20 : 10)))}–{Math.max(2, Math.round(minutes * (model === "small" ? 40 : 20)))} s for this clip.</>}
         </small>

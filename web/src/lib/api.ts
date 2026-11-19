@@ -24,7 +24,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     res = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } });
   } catch (e) {
     if ((e as Error)?.name === "AbortError") throw new ApiError("Upload cancelled.", 0);
-    throw new ApiError("Can't reach the editor server. Make sure it's running on your computer and that this device is on the same Wi-Fi.", 0);
+    throw new ApiError("Can't reach the editor server. Make sure the editor is running (reopen your codespace, or run npm start on your computer).", 0);
   }
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => ({}));

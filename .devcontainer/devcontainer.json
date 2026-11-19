@@ -1,0 +1,19 @@
+{
+  "name": "Premium Studio — AI Video Editor",
+  // Ubuntu 24.04 ships FFmpeg 6.1 with libx264, libass, zscale (same as our test setup).
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" }
+  },
+  // One-time setup when the codespace is created: FFmpeg + dependencies + build.
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  // Every time you open the codespace: start the editor and print the link.
+  "postAttachCommand": "bash .devcontainer/start.sh",
+  "forwardPorts": [8787],
+  "portsAttributes": {
+    "8787": { "label": "Premium Studio editor", "onAutoForward": "openBrowser" }
+  },
+  // 2-core machine: the smallest, so the free monthly allowance lasts longest (~60 h).
+  "hostRequirements": { "cpus": 2 },
+  "containerEnv": { "WHISPER_MODEL": "small" }
+}

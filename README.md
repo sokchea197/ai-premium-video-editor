@@ -4,7 +4,23 @@ A web app for turning raw footage into polished personal-branding videos for Ins
 
 **Zero running cost.** Everything runs on your own computer with free, open-source tools: FFmpeg renders the video, and Whisper (OpenAI's open-source speech model, run locally) transcribes speech. There are no accounts, API keys, subscriptions or hosting fees. Your footage never leaves your computer.
 
-## Quick start
+## Only have an iPhone? Use GitHub Codespaces (free)
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/sokchea197/ai-premium-video-editor/tree/claude/ai-premium-video-repo-ra4jra?quickstart=1)
+
+An iPhone can't run FFmpeg or Whisper itself, so the editor runs on a free GitHub cloud machine and you use it from Safari.
+
+- **Cost:** $0. Personal GitHub accounts include 120 core-hours a month (about 60 hours on the 2-core machine this project uses) and 15 GB of storage. No credit card is needed. Without a payment method, GitHub stops the codespace when the free allowance is used up and never charges you.
+- **Steps:**
+  1. In Safari, open the "Open in GitHub Codespaces" link above while signed in to GitHub, then tap **Create codespace** (or **Resume** later).
+  2. The first time only, setup takes 3–5 minutes (it installs FFmpeg and builds the editor).
+  3. The terminal then prints **"Open this link in Safari on your iPhone: https://…app.github.dev"**. Tap it.
+- **Good to know:**
+  - The codespace pauses after 30 minutes without activity. Open the same link again to resume.
+  - Download your finished videos, and delete old projects in the editor to stay within the 15 GB of free storage.
+  - Your project link is private to your GitHub account.
+
+## Quick start (Mac or Windows computer)
 
 You need two free tools:
 

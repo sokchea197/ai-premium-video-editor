@@ -47,7 +47,7 @@ export function DirectPanel({ project, beforeApply, onApplied, onExport }: Props
       const r = await api.instructions(project.id, text, true);
       if (r.project) onApplied(r.project);
       setApplied(true);
-      toast.success(r.job ? "Edits applied. Transcribing captions now (free, on your computer)…" : "Edits applied. Press play to preview.");
+      toast.success(r.job ? "Edits applied. Transcribing captions now (free, with Whisper)…" : "Edits applied. Press play to preview.");
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -85,7 +85,7 @@ export function DirectPanel({ project, beforeApply, onApplied, onExport }: Props
               <p className="plan__head">I'll make these changes:</p>
               <ul className="plan__list">
                 {plan.plan.changes.map((c) => <li key={c}>{c}</li>)}
-                {plan.willTranscribe && <li>Transcribe speech for captions (free, runs on your computer)</li>}
+                {plan.willTranscribe && <li>Transcribe speech for captions (free, with Whisper)</li>}
               </ul>
             </>
           ) : (
@@ -110,7 +110,7 @@ export function DirectPanel({ project, beforeApply, onApplied, onExport }: Props
           )}
         </div>
       )}
-      <p className="fineprint">Understands format, framing, colour looks, speed and slow motion, trimming and length, fades, sound and captions. It runs on your own computer, free. You can fine-tune everything in the other tabs.</p>
+      <p className="fineprint">Understands format, framing, colour looks, speed and slow motion, trimming and length, fades, sound and captions. It runs on the editor's own server, free. You can fine-tune everything in the other tabs.</p>
     </div>
   );
 }

@@ -104,7 +104,7 @@ export function Library() {
 
       {serverDown && (
         <div className="notice notice--error server-down">
-          <strong>Can't reach the editor server.</strong> Start it on your computer with <code>npm start</code>, then open the address it prints (on iPhone, use the “On your iPhone” address while on the same Wi-Fi).
+          <strong>Can't reach the editor server.</strong> If you use GitHub Codespaces, reopen your codespace (it pauses after 30 minutes idle). On a computer, run <code>npm start</code> and open the address it prints.
           <button className="link" onClick={() => api.health().then(() => { setServerDown(false); refresh(); }, () => toast.error("Still can't reach the server."))}>Retry</button>
         </div>
       )}

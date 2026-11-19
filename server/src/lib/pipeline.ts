@@ -185,7 +185,7 @@ export class Pipeline {
         const transcript = await this.transcriber.transcribe({
           audio, model: opts.model, language: opts.language, signal: ctx.signal,
           onDownload: (f) => ctx.progress(0.1, `Downloading free Whisper model, one time only (${Math.round(f * size)} of ${size} MB)`),
-          onProgress: (f) => ctx.progress(0.12 + f * 0.83, "Transcribing speech on this computer"),
+          onProgress: (f) => ctx.progress(0.12 + f * 0.83, "Transcribing speech with Whisper"),
         });
         ctx.progress(0.97, transcript.words.length ? "Building synchronised captions" : "No speech detected");
         await this.store.update(id, (proj) => {
